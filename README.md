@@ -54,11 +54,16 @@ from you and plays both colours, dropping red wherever you call it. The phone
 | `1`–`7` | Call this column for red |
 | `Win` / `Lost` / `Draw` | Game over |
 
-- **Switch on/off:** press and hold the turn indicator (the two discs at the
-  bottom left) for about a second, then let go. The numbers 1–7 appear above
-  the columns, the on-board signal is turned off, and the track starts.
-  The phone remembers the mode, so after reopening the page, tap anywhere
-  once to restart the track (iPhone only starts audio from a tap).
+- **Switch on/off:** tap the small **123** button below the board. The
+  numbers 1–7 appear above the columns, the on-board signal is turned off,
+  and the silent track starts. The phone remembers the mode, so after
+  reopening the page, tap anywhere once to restart the track (iPhone only
+  starts audio from a tap).
+- **Use a normal Safari tab, not Private Browsing.** In private tabs Safari
+  deliberately blanks everything on Now Playing (title, artwork, even the
+  site name), so the watch shows only the play controls.
+- The watch shows the signal twice: as the track title and as big white
+  text on the album-art square.
 - **Before handing over:** check that your watch shows `—` or a number in
   Now Playing. Turning on *Auto-Launch Audio Apps* on the watch
   (Watch app → General → Auto-Launch) makes Now Playing open by itself.
