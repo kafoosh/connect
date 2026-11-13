@@ -71,6 +71,39 @@ from you and plays both colours, dropping red wherever you call it. The phone
   can't be stopped by accident; switch the mode off on the phone instead.
 - Your first move is always the centre (`4`).
 
+## Sound and the chime prediction (two phones)
+
+The speaker button next to the turn discs turns game sounds on or off: a soft
+tick as the disc slides between columns, a clack when it lands, and a
+winning chime at the end of every game. Mute only affects these sounds; audio
+mode's silent watch track keeps playing.
+
+The chime secretly carries the exact final board. A second phone running
+the same page can hear it and copy that board:
+
+1. **Prediction phone:** open the page and play a "prediction game" alone.
+   Then **press and hold the restart button for about a second** and let go.
+   Allow the microphone the first time. When it's listening, the turn
+   indicator flips to the other colour (red's turn shows yellow). Holding
+   restart again stops listening. Put the phone face down. It keeps the
+   screen awake, and it must stay on this page.
+2. **Game phone** (borrowed, sound on, volume up): the spectator plays a game.
+   When it ends, the chime plays.
+3. The prediction phone hears the chime, stops listening and shows that
+   exact final board as if its prediction game had ended that way, with the
+   winning four highlighted. Turn it over.
+
+If the chime wasn't heard (too noisy, volume too low), tap the finished board
+on the game phone to play it again.
+
+How it works: the board fits in 49 bits, plus an 11-bit check, sent as 20
+quick notes from eight pitches within one octave (so no note is an overtone
+of another) after a two-note "ta-da" that marks the start. The listener
+checks the code and that the board is a legal finished game before
+accepting it. In simulation (echoey rooms, noise louder than the chime,
+background music) it decoded every board correctly, with no false alarms.
+iPhone shows an orange microphone dot while listening.
+
 Themes: `?theme=classic` (default, blue board), `?theme=flat`, `?theme=night`.
 
 ![classic, flat and night themes](docs/designs.png)

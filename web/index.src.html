@@ -109,6 +109,15 @@ html.audio #labels { display: inline; }
 .chip.p1 { background: var(--p1); box-shadow: inset 0 0 0 4px var(--p1-edge); }
 .chip.p2 { background: var(--p2); box-shadow: inset 0 0 0 4px var(--p2-edge); }
 .chip.on { transform: scale(1); opacity: 1; }
+button#sound {
+  width: 40px; height: 40px; border: 0; padding: 0; margin-left: 2px; border-radius: 50%;
+  background: transparent; color: var(--ui); opacity: .55; cursor: pointer; display: grid; place-items: center;
+}
+button#sound .off { display: none; }
+button#sound.muted { opacity: .35; }
+button#sound.muted .on { display: none; }
+button#sound.muted .off { display: inline; }
+#restart { -webkit-touch-callout: none; }
 .chip.won { animation: bob .7s ease-in-out infinite alternate; }
 @keyframes bob { from { transform: scale(1) translateY(0); } to { transform: scale(1.08) translateY(-4px); } }
 .tools { display: flex; gap: 4px; }
@@ -152,7 +161,12 @@ button#restart.nudge { animation: nudge 1.2s ease-in-out infinite; }
     <rect id="hit" x="0" y="0" width="740" height="780" fill="transparent"/>
   </svg>
   <div class="bar">
-    <div class="turn"><div class="chip p1 on" id="c1"></div><div class="chip p2" id="c2"></div></div>
+    <div class="turn">
+      <div class="chip p1 on" id="c1"></div><div class="chip p2" id="c2"></div>
+      <button id="sound" aria-label="Sound on">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5v5h3.5L12 19V5L7.5 9.5H4z" fill="currentColor"/><path class="on" d="M15.5 9a4 4 0 0 1 0 6"/><path class="on" d="M18.2 6.5a7.5 7.5 0 0 1 0 11"/><path class="off" d="m16 9.5 5 5m0-5-5 5"/></svg>
+      </button>
+    </div>
     <div class="tools">
       <button id="nums" aria-label="Column numbers">123</button>
       <button id="undo" aria-label="Undo">
@@ -236,7 +250,7 @@ const winsG = document.getElementById("wins");
 const preview = document.getElementById("preview");
 let pointerX = null;   // board x of the mouse/finger while hovering or dragging
 let dragId = null;     // pointer currently dragging the disc
-let lastCol = null;
+let lastCol = null, lastLane = null;
 const lane = document.getElementById("lane");
 const undoBtn = document.getElementById("undo");
 
@@ -284,8 +298,10 @@ function undo() {
 
 function updateTurn() {
   undoBtn.disabled = moves.length === 0;
-  document.getElementById("c1").classList.toggle("on", over ? over === 1 : turn === 1);
-  document.getElementById("c2").classList.toggle("on", over ? over === 2 : turn === 2);
+  let shown = over ? over : turn;
+  if (listening && !over) shown = 3 - shown;      // secret sign: listening for the chime
+  document.getElementById("c1").classList.toggle("on", over === 3 ? false : shown === 1);
+  document.getElementById("c2").classList.toggle("on", over === 3 ? false : shown === 2);
   preview.classList.remove("p1", "p2");
   preview.classList.add("p" + turn);
   preview.classList.toggle("hidden", !!(over || busy));
@@ -307,6 +323,8 @@ function placePreview() {
   preview.setAttribute("transform", `translate(${x} ${PREVIEW_Y})`);
   // subtle lane over the column the disc would fall into
   const c = colOf(x);
+  if (live && c !== lastLane) tick();
+  lastLane = live ? c : null;
   lane.setAttribute("x", PAD + c * CELL + 6);
   lane.classList.toggle("on", live && heights[c] < ROWS);
 }
@@ -340,9 +358,12 @@ function drop(c) {
   turn = 3 - player;
   updateTurn();
   if (!checkWin(c, r, player) && moves.length < COLS * ROWS) requestHint();
+  let landed = 0;
   (function frame(now) {
     const t = now - start;
     let y;
+    if (t >= tFall && landed === 0) { landed = 1; clack(1); }
+    if (t >= tFall + tBounce && landed === 1) { landed = 2; clack(0.3); }
     if (t < tFall) y = y0 + 0.5 * g * t * t;
     else if (t < tFall + tBounce) { const u = t - tFall; y = y1 - (vBounce * u - 0.5 * g * u * u); }
     else y = y1;
@@ -352,7 +373,7 @@ function drop(c) {
   })(start);
 }
 
-function afterDrop(c, r, player) {
+function afterDrop(c, r, player, silent) {
   const line = checkWin(c, r, player);
   if (line) {
     over = player;
@@ -368,6 +389,7 @@ function afterDrop(c, r, player) {
     document.getElementById("restart").classList.add("nudge");
   }
   if (over) nowPlaying(over === 1 ? "Win" : over === 2 ? "Lost" : "Draw");
+  if (over && !silent) setTimeout(playChime, 120);
   updateTurn();
   showHint();
 }
@@ -497,6 +519,7 @@ function boardX(evt) {
 // Press anywhere on the board to pick up the disc, slide to a column, let go to drop.
 svg.addEventListener("pointerdown", e => {
   if (AUDIO) audioWake();
+  if (over && !busy) { soundUnlock(); playChime(); return; }
   if (dragId !== null || over || busy || (e.pointerType === "mouse" && e.button !== 0)) return;
   dragId = e.pointerId;
   svg.setPointerCapture(e.pointerId);
@@ -524,7 +547,10 @@ svg.addEventListener("pointerleave", e => {
   if (dragId === null && e.pointerType === "mouse") { pointerX = null; placePreview(); }
 });
 undoBtn.addEventListener("click", undo);
-document.getElementById("restart").addEventListener("click", newGame);
+document.getElementById("restart").addEventListener("click", e => {
+  if (e.currentTarget.dataset.long) { delete e.currentTarget.dataset.long; return; }
+  newGame();
+});
 
 // ---------------------------------------------------------------------------
 // Audio mode: the phone "plays" a silent track and the track title (shown in
@@ -610,6 +636,312 @@ for (const ev of ["touchend", "click"]) {
   document.addEventListener(ev, () => { if (AUDIO && (!player || player.paused)) audioWake(); }, { passive: true });
 }
 if (AUDIO) { document.documentElement.classList.add("audio"); svg.setAttribute("viewBox", "0 -70 740 850"); }
+
+// ---------------------------------------------------------------------------
+// Sound: plastic clicks and the winning chime (Web Audio, nothing to download).
+// The speaker button mutes these; it does not touch audio mode's silent track.
+// ---------------------------------------------------------------------------
+let MUTED = false;
+try { MUTED = localStorage.getItem("c4-mute") === "1"; } catch (e) {}
+let ac = null, sfx = null, noiseBuf = null;
+function soundUnlock() {
+  if (!ac) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    try { ac = new AC(); } catch (e) { ac = null; return null; }
+    sfx = ac.createGain(); sfx.gain.value = 0.9; sfx.connect(ac.destination);
+    noiseBuf = ac.createBuffer(1, Math.round(ac.sampleRate * 0.25), ac.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    const s = ac.createBufferSource(); s.buffer = ac.createBuffer(1, 1, 22050); s.connect(ac.destination); s.start(0);
+  }
+  if (!listening) setSession(MUTED && !AUDIO ? "auto" : "playback"); // play with the silent switch on
+  if (ac.state !== "running") ac.resume().catch(() => {});
+  return ac;
+}
+document.addEventListener("visibilitychange", () => {
+  if (!ac) return;
+  if (document.hidden && !listening) ac.suspend().catch(() => {});
+  else if (!document.hidden) ac.resume().catch(() => {});
+});
+const canPlay = () => !MUTED && ac && ac.state === "running";
+function tick() {                       // disc sliding into the next lane
+  if (!canPlay()) return;
+  const t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
+  o.type = "triangle"; o.frequency.setValueAtTime(1900, t); o.frequency.exponentialRampToValueAtTime(900, t + 0.025);
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.16, t + 0.002); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.03);
+  o.connect(g); g.connect(sfx); o.start(t); o.stop(t + 0.04);
+}
+function clack(strength) {              // disc landing (and its small bounce)
+  if (!canPlay()) return;
+  const t = ac.currentTime;
+  const n = ac.createBufferSource(); n.buffer = noiseBuf;
+  const bp = ac.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 2300; bp.Q.value = 1.4;
+  const g = ac.createGain();
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.9 * strength, t + 0.002); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.07);
+  n.connect(bp); bp.connect(g); g.connect(sfx); n.start(t); n.stop(t + 0.09);
+  const o = ac.createOscillator(), og = ac.createGain();
+  o.type = "sine"; o.frequency.setValueAtTime(340, t); o.frequency.exponentialRampToValueAtTime(140, t + 0.06);
+  og.gain.setValueAtTime(0.0001, t); og.gain.exponentialRampToValueAtTime(0.5 * strength, t + 0.003); og.gain.exponentialRampToValueAtTime(0.0001, t + 0.08);
+  o.connect(og); og.connect(sfx); o.start(t); o.stop(t + 0.1);
+}
+
+// ---- The chime is a tiny acoustic modem --------------------------------------
+// Payload: the final board (49 bits: per column, red discs + (2^height - 1), 7 bits)
+// plus an 11-bit check = 60 bits = 20 notes of 3 bits each.
+// Sound: two-note "ta-da" (E5, B5) to sync, 20 quick notes picked from eight
+// pitches inside one octave (E6..D#7, so no note is a harmonic of another),
+// then a decorative E major chord.
+const CH = {
+  PRE: [659.255, 987.767], PRE_DUR: 0.12,
+  DATA: [1318.51, 1479.98, 1567.98, 1760.00, 1975.53, 2093.00, 2349.32, 2489.02],
+  NOTE: 0.075, NSYM: 20,
+};
+CH.LEN = 2 * CH.PRE_DUR + CH.NSYM * CH.NOTE;
+const checkOf = ks => ks.reduce((h, k) => (h * 131 + k + 7) % 2039, 0);
+function boardToSymbols(g) {
+  const ks = [];
+  for (let c = 0; c < COLS; c++) {
+    let h = 0, red = 0;
+    while (h < ROWS && g[c][h]) { if (g[c][h] === 1) red += 1 << h; h++; }
+    ks.push(red + (1 << h) - 1);
+  }
+  let v = 0n;
+  ks.forEach((k, c) => { v |= BigInt(k) << BigInt(7 * c); });
+  v |= BigInt(checkOf(ks)) << 49n;
+  const sym = [];
+  for (let i = 0; i < CH.NSYM; i++) sym.push(Number((v >> BigInt(3 * i)) & 7n));
+  return sym;
+}
+function symbolsToBoard(sym) {
+  let v = 0n;
+  sym.forEach((s, i) => { v |= BigInt(s) << BigInt(3 * i); });
+  const ks = [];
+  for (let c = 0; c < COLS; c++) ks.push(Number((v >> BigInt(7 * c)) & 127n));
+  if (Number(v >> 49n) !== checkOf(ks)) return null;
+  const g = [];
+  for (const k of ks) {
+    const h = Math.floor(Math.log2(k + 1));
+    if (h > ROWS) return null;
+    const red = k - ((1 << h) - 1), col = [];
+    for (let r = 0; r < ROWS; r++) col.push(r < h ? (red >> r & 1 ? 1 : 2) : 0);
+    g.push(col);
+  }
+  return g;
+}
+function scheduleChime(ctx, dest, t0, sym) {
+  const note = (f, t, dur, a, harm) => {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.value = f;
+    if (harm) {                       // a touch of bell-like overtone
+      const re = new Float32Array([0, 1, 0.18, 0.06]), im = new Float32Array(4);
+      o.setPeriodicWave(ctx.createPeriodicWave(re, im));
+    }
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(a, t + 0.006);
+    g.gain.setValueAtTime(a, t + dur - 0.016);
+    g.gain.linearRampToValueAtTime(0, t + dur);
+    o.connect(g); g.connect(dest); o.start(t); o.stop(t + dur + 0.01);
+  };
+  let t = t0;
+  for (const f of CH.PRE) { note(f, t, CH.PRE_DUR, 0.55, true); t += CH.PRE_DUR; }
+  for (const s of sym) { note(CH.DATA[s], t, CH.NOTE, 0.5, true); t += CH.NOTE; }
+  // closing chord (after the data, so it can be as pretty as it likes)
+  for (const f of [1318.51, 1661.22, 1975.53, 2637.02]) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.value = f;
+    g.gain.setValueAtTime(0, t + 0.03); g.gain.linearRampToValueAtTime(0.16, t + 0.04);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.9);
+    o.connect(g); g.connect(dest); o.start(t + 0.03); o.stop(t + 0.95);
+  }
+  return t + 0.95;
+}
+function playChime() {
+  if (!canPlay()) return;
+  scheduleChime(ac, sfx, ac.currentTime + 0.05, boardToSymbols(grid));
+}
+
+// All 69 lines of four, used to sanity-check a received board.
+const LINES = [];
+for (const [dc, dr] of [[0, 1], [1, 0], [1, 1], [1, -1]])
+  for (let c = 0; c < COLS; c++) for (let r = 0; r < ROWS; r++) {
+    const l = [0, 1, 2, 3].map(i => [c + i * dc, r + i * dr]);
+    if (l.every(([x, y]) => x >= 0 && x < COLS && y >= 0 && y < ROWS)) LINES.push(l);
+  }
+const anyFour = g => LINES.some(l => g[l[0][0]][l[0][1]] && l.every(([x, y]) => g[x][y] === g[l[0][0]][l[0][1]]));
+// A playable move order that ends exactly in board g (or null if g can't happen).
+function movesFor(g0) {
+  const g = g0.map(col => col.slice()), h = g.map(col => col.filter(Boolean).length);
+  if (g.some((col, c) => col.slice(0, h[c]).some(v => !v))) return null;
+  let n = h.reduce((a, b) => a + b, 0), budget = 200000;
+  const done = new Set(), out = [];
+  const rec = (n, first) => {
+    if (n === 0) return true;
+    if (--budget < 0) return false;
+    const key = h.join("") + g.map(col => col.join("")).join("");
+    if (done.has(key)) return false;
+    const colour = n % 2 ? 1 : 2;
+    for (const c of [3, 2, 4, 1, 5, 0, 6]) {
+      if (!h[c] || g[c][h[c] - 1] !== colour) continue;
+      h[c]--; g[c][h[c]] = 0;
+      if ((!first || !anyFour(g)) && rec(n - 1, false)) { out.push(c); return true; }
+      g[c][h[c]] = colour; h[c]++;
+    }
+    done.add(key);
+    return false;
+  };
+  if (!rec(n, true)) return null;
+  const ended = anyFour(g0) || n === COLS * ROWS;
+  return ended ? out : null;
+}
+
+// ---- Listening: decode the chime from the microphone ---------------------------
+class ChimeListener {
+  constructor(rate, onBoard) {
+    this.rate = rate; this.onBoard = onBoard;
+    this.win = Math.round(0.03 * rate); this.hop = Math.round(0.01 * rate);
+    this.buf = new Float32Array(Math.round(rate * 6)); this.n = 0; // samples seen
+    this.frames = [];                                               // {t, e[10]}
+    this.nextFrame = this.win;
+    this.freqs = [...CH.PRE, ...CH.DATA];
+    this.hann = new Float32Array(this.win).map((_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (this.win - 1)));
+    this.coef = this.freqs.map(f => 2 * Math.cos(2 * Math.PI * f / rate));
+    this.pending = null;
+  }
+  feed(x) {
+    const B = this.buf, L = B.length;
+    for (let i = 0; i < x.length; i++) B[(this.n + i) % L] = x[i];
+    this.n += x.length;
+    while (this.nextFrame <= this.n) { this.frame(this.nextFrame); this.nextFrame += this.hop; }
+    this.search();
+  }
+  frame(end) {
+    const B = this.buf, L = B.length, W = this.win, start = end - W, e = [];
+    for (const c of this.coef) {
+      let s1 = 0, s2 = 0;
+      for (let i = 0; i < W; i++) { const s0 = B[(start + i) % L] * this.hann[i] + c * s1 - s2; s2 = s1; s1 = s0; }
+      e.push(s1 * s1 + s2 * s2 - c * s1 * s2);
+    }
+    this.frames.push({ t: (end - W / 2) / this.rate, e });
+    if (this.frames.length > 600) this.frames.splice(0, 100);
+  }
+  share(f, k) { const s = f.e.reduce((a, b) => a + b, 0) + 1e-12; return f.e[k] / s; }
+  search() {
+    const F = this.frames, now = this.n / this.rate;
+    if (this.pending) {
+      if (now >= this.pending + CH.NSYM * CH.NOTE + 0.08) { const t = this.pending; this.pending = null; this.decode(t); }
+      return;
+    }
+    // "ta-da": >= 6 frames led by E5, then >= 6 frames led by B5
+    for (let i = F.length - 1; i >= 12; i--) {
+      if (this.share(F[i], 1) < 0.5 || this.share(F[i - 1], 1) >= 0.5) continue; // i = first B5 frame
+      let b = 0; while (i + b < F.length && this.share(F[i + b], 1) >= 0.5) b++;
+      let a = 0, j = i - 1;
+      while (j >= 0 && i - j <= 4 && this.share(F[j], 0) < 0.5) j--;          // tolerate a short blur
+      while (j >= 0 && this.share(F[j], 0) >= 0.5) { a++; j--; }
+      if (a >= 6 && b >= 6) { this.pending = F[i].t + CH.PRE_DUR; return; }
+    }
+  }
+  decode(t0) {
+    const F = this.frames.filter(f => f.t > t0 - 0.1 && f.t < t0 + CH.NSYM * CH.NOTE + 0.1);
+    let best = null;
+    for (let d = -0.035; d <= 0.0351; d += 0.005) {
+      let score = 0; const slots = [];
+      for (let i = 0; i < CH.NSYM; i++) {
+        const c = t0 + d + (i + 0.5) * CH.NOTE, e = new Array(8).fill(0);
+        for (const f of F) if (Math.abs(f.t - c) <= 0.021) for (let k = 0; k < 8; k++) e[k] += f.e[k + 2];
+        const order = e.map((v, k) => [v, k]).sort((p, q) => q[0] - p[0]);
+        const sum = e.reduce((a, b) => a + b, 0) + 1e-12;
+        score += order[0][0] / sum;
+        slots.push({ s: order[0][1], alt: order[1][1], conf: order[0][0] / (order[1][0] + 1e-12) });
+      }
+      if (!best || score > best.score) best = { score, slots };
+    }
+    const sym = best.slots.map(x => x.s);
+    const weak = best.slots.map((x, i) => [x.conf, i]).sort((p, q) => p[0] - q[0]).slice(0, 4).map(p => p[1]);
+    const tries = [[]];
+    for (const i of weak) tries.push([i]);
+    for (let a = 0; a < weak.length; a++) for (let b = a + 1; b < weak.length; b++) tries.push([weak[a], weak[b]]);
+    for (const swap of tries) {
+      const s = sym.slice();
+      for (const i of swap) s[i] = best.slots[i].alt;
+      const g = symbolsToBoard(s);
+      if (g && movesFor(g)) { this.onBoard(g); return; }
+    }
+  }
+}
+
+let listening = false, mic = null, proc = null, wakeLock = null, listener = null;
+async function keepAwake() {
+  try { if ("wakeLock" in navigator && document.visibilityState === "visible") wakeLock = await navigator.wakeLock.request("screen"); } catch (e) {}
+}
+document.addEventListener("visibilitychange", () => { if (listening && document.visibilityState === "visible") keepAwake(); });
+async function startListening() {
+  setSession("play-and-record");
+  const ctx = soundUnlock();
+  if (!ctx || !navigator.mediaDevices) return;
+  try {
+    mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } });
+  } catch (e) { setSession("auto"); return; }
+  listening = true;
+  listener = new ChimeListener(ctx.sampleRate, g => { stopListening(); revealBoard(g); });
+  const src = ctx.createMediaStreamSource(mic);
+  proc = ctx.createScriptProcessor(2048, 1, 1);
+  proc.onaudioprocess = e => { if (listener) listener.feed(e.inputBuffer.getChannelData(0)); };
+  const zero = ctx.createGain(); zero.gain.value = 0;
+  src.connect(proc); proc.connect(zero); zero.connect(ctx.destination);
+  keepAwake();
+  updateTurn();                                   // the secret "it's listening" sign
+}
+function stopListening() {
+  listening = false; listener = null;
+  if (proc) { proc.onaudioprocess = null; try { proc.disconnect(); } catch (e) {} proc = null; }
+  if (mic) { mic.getTracks().forEach(t => t.stop()); mic = null; }
+  setSession(MUTED && !AUDIO ? "auto" : "playback");
+  updateTurn();
+}
+// Show the received board as if the prediction game had ended that way.
+function revealBoard(g) {
+  const order = movesFor(g);
+  if (!order) return;
+  newGame();
+  let last = null;
+  for (const c of order) {
+    const r = heights[c]++, p = turn;
+    grid[c][r] = p; moves += c + 1; lastCol = c;
+    const d = makeDisc(p); d.setAttribute("transform", `translate(${cx(c)} ${cy(r)})`); discEls[c][r] = d;
+    turn = 3 - p; last = [c, r, p];
+  }
+  setHint(null);
+  afterDrop(last[0], last[1], last[2], true);
+}
+// Long-press the restart button (~0.7 s) to start/stop listening.
+(function () {
+  const btn = document.getElementById("restart");
+  let downAt = 0;
+  btn.addEventListener("pointerdown", e => { downAt = e.timeStamp; });
+  btn.addEventListener("pointerleave", () => { downAt = 0; });
+  btn.addEventListener("pointerup", e => {
+    if (downAt && e.timeStamp - downAt > 700) {
+      btn.dataset.long = "1";                     // swallow the click that follows
+      if (listening) stopListening(); else startListening();
+    }
+    downAt = 0;
+  });
+  btn.addEventListener("contextmenu", e => e.preventDefault());
+})();
+
+// Speaker button (next to the turn indicator).
+const soundBtn = document.getElementById("sound");
+function showSound() { soundBtn.classList.toggle("muted", MUTED); soundBtn.setAttribute("aria-label", MUTED ? "Sound off" : "Sound on"); }
+soundBtn.addEventListener("click", () => {
+  MUTED = !MUTED;
+  try { localStorage.setItem("c4-mute", MUTED ? "1" : "0"); } catch (e) {}
+  showSound();
+  soundUnlock();
+});
+showSound();
+document.addEventListener("pointerdown", () => { if (!MUTED || listening) soundUnlock(); }, { capture: true });
 
 newGame();
 </script>
