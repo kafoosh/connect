@@ -142,7 +142,7 @@ button#sound.muted .off { display: inline; }
 button#nums { font: 700 13px/1 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; letter-spacing: .5px; opacity: .45; }
 html.audio button#nums { opacity: .9; }
 button#undo:active:not(:disabled) { transform: translateX(-3px); }
-button#restart:active { transform: rotate(-40deg); }
+button#restart:active, button#restart.pressed { transform: rotate(-40deg); }
 button#restart.nudge { animation: nudge 1.2s ease-in-out infinite; }
 @keyframes nudge { 50% { transform: rotate(-30deg); opacity: 1; } }
 </style>
@@ -721,7 +721,7 @@ function soundUnlock() {
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
     const s = ac.createBufferSource(); s.buffer = ac.createBuffer(1, 1, 22050); s.connect(ac.destination); s.start(0);
   }
-  if (!listening) setSession(MUTED && !AUDIO ? "auto" : "playback"); // play with the silent switch on
+  if (!listening && !micStarting) setSession(MUTED && !AUDIO ? "auto" : "playback"); // play with the silent switch on
   if (ac.state !== "running") ac.resume().catch(() => {});
   return ac;
 }
@@ -937,18 +937,26 @@ class ChimeListener {
   }
 }
 
+let micStarting = false;
 let listening = false, mic = null, proc = null, wakeLock = null, listener = null;
 async function keepAwake() {
   try { if ("wakeLock" in navigator && document.visibilityState === "visible") wakeLock = await navigator.wakeLock.request("screen"); } catch (e) {}
 }
 document.addEventListener("visibilitychange", () => { if (listening && document.visibilityState === "visible") keepAwake(); });
 async function startListening() {
-  setSession("play-and-record");
-  const ctx = soundUnlock();
-  if (!ctx || !navigator.mediaDevices) return;
+  if (micStarting) return;
+  micStarting = true;
+  const ctx = soundUnlock();                      // inside the tap, so iOS lets it run
+  setSession("play-and-record");                  // after soundUnlock: the mic needs this session
+  if (!ctx || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { micStarting = false; listenFailed(); return; }
   try {
     mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } });
-  } catch (e) { setSession("auto"); return; }
+  } catch (e) {
+    try { mic = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e2) { mic = null; }
+  }
+  micStarting = false;
+  if (!mic) { setSession(MUTED && !AUDIO ? "auto" : "playback"); listenFailed(); return; }
+  if (ctx.state !== "running") ctx.resume().catch(() => {});
   listening = true;
   listener = new ChimeListener(ctx.sampleRate, g => { stopListening(); revealBoard(g); });
   const src = ctx.createMediaStreamSource(mic);
@@ -958,6 +966,12 @@ async function startListening() {
   src.connect(proc); proc.connect(zero); zero.connect(ctx.destination);
   keepAwake();
   updateTurn();                                   // the secret "it's listening" sign
+}
+// Couldn't listen (no microphone permission, or the page isn't on https):
+// the turn discs blink twice instead of flipping.
+function listenFailed() {
+  const t = document.querySelector(".turn");
+  t.animate([{ opacity: 1 }, { opacity: 0.15 }, { opacity: 1 }, { opacity: 0.15 }, { opacity: 1 }], { duration: 900 });
 }
 function stopListening() {
   listening = false; listener = null;
@@ -982,16 +996,36 @@ function revealBoard(g) {
   afterDrop(last[0], last[1], last[2], true);
 }
 // Long-press the restart button (~0.7 s) to start/stop listening.
+// Touch is handled with touch events and preventDefault, so iOS can't turn the
+// hold into a text-selection / callout gesture (which cancels the press).
+// A short tap still starts a new game.
 (function () {
   const btn = document.getElementById("restart");
+  const LONG = 650;
+  const toggle = () => { if (listening) stopListening(); else startListening(); };
+  let touchAt = 0;
+  btn.addEventListener("touchstart", e => { e.preventDefault(); touchAt = e.timeStamp || performance.now(); btn.classList.add("pressed"); }, { passive: false });
+  btn.addEventListener("touchend", e => {
+    e.preventDefault();
+    btn.classList.remove("pressed");
+    if (!touchAt) return;
+    const held = (e.timeStamp || performance.now()) - touchAt;
+    touchAt = 0;
+    if (held >= LONG) toggle(); else newGame();
+  }, { passive: false });
+  btn.addEventListener("touchcancel", e => {
+    btn.classList.remove("pressed");
+    const held = (e.timeStamp || performance.now()) - touchAt;
+    if (touchAt && held >= LONG) toggle();
+    touchAt = 0;
+  });
+  // mouse
   let downAt = 0;
-  btn.addEventListener("pointerdown", e => { downAt = e.timeStamp; });
-  btn.addEventListener("pointerleave", () => { downAt = 0; });
+  btn.addEventListener("pointerdown", e => { if (e.pointerType === "mouse") downAt = e.timeStamp; });
+  btn.addEventListener("pointerleave", e => { if (e.pointerType === "mouse") downAt = 0; });
   btn.addEventListener("pointerup", e => {
-    if (downAt && e.timeStamp - downAt > 700) {
-      btn.dataset.long = "1";                     // swallow the click that follows
-      if (listening) stopListening(); else startListening();
-    }
+    if (e.pointerType !== "mouse") return;
+    if (downAt && e.timeStamp - downAt >= LONG) { btn.dataset.long = "1"; toggle(); }
     downAt = 0;
   });
   btn.addEventListener("contextmenu", e => e.preventDefault());
