@@ -1075,16 +1075,36 @@ async function startListening() {
   }
   micStarting = false;
   if (!mic) { syncSession(); awakeOff(); listenFailed(); return; }
-  if (ctx.state !== "running") ctx.resume().catch(() => {});
   listening = true;
+  attachMic();
+  // Turning the microphone on switches iOS into record mode, which can pause the
+  // audio engine that analyses it. While the mic is live iOS lets us restart the
+  // engine without a tap, so keep it running for as long as we listen; if it
+  // won't come back, rebuild it and plug the mic in again.
+  let stalled = 0;
+  clearInterval(micGuard);
+  micGuard = setInterval(() => {
+    if (!listening || !ac) return;
+    if (ac.state === "running") { stalled = 0; return; }
+    ac.resume().catch(() => {});
+    stalled += 0.5;
+    if (stalled >= 3) { dbg("listening engine stuck: rebuilding"); stalled = 0; buildContext(); attachMic(); }
+  }, 500);
+  requestWakeLock();
+  updateTurn();                                   // the secret "it's listening" sign
+}
+let micGuard = null;
+function attachMic() {
+  if (proc) { proc.onaudioprocess = null; try { proc.disconnect(); } catch (e) {} }
+  const ctx = ac;
   listener = new ChimeListener(ctx.sampleRate, g => { stopListening(true); revealBoard(g); });
   const src = ctx.createMediaStreamSource(mic);
   proc = ctx.createScriptProcessor(2048, 1, 1);
   proc.onaudioprocess = e => { if (listener) listener.feed(e.inputBuffer.getChannelData(0)); };
   const zero = ctx.createGain(); zero.gain.value = 0;
   src.connect(proc); proc.connect(zero); zero.connect(ctx.destination);
-  requestWakeLock();
-  updateTurn();                                   // the secret "it's listening" sign
+  if (ctx.state !== "running") ctx.resume().catch(() => {});
+  dbg("mic attached (" + ctx.state + ", " + ctx.sampleRate + " Hz)");
 }
 // Couldn't listen (no microphone permission, or the page isn't on https):
 // the turn discs blink twice instead of flipping.
@@ -1095,6 +1115,7 @@ function listenFailed() {
 // keepAwake: after a reveal, stay awake until the phone is picked up and tapped.
 function stopListening(keepAwake) {
   listening = false; listener = null;
+  clearInterval(micGuard); micGuard = null;
   if (keepAwake) awakeUntilTap = true; else awakeOff();
   if (proc) { proc.onaudioprocess = null; try { proc.disconnect(); } catch (e) {} proc = null; }
   if (mic) { mic.getTracks().forEach(t => t.stop()); mic = null; }
@@ -1188,7 +1209,8 @@ if (DEBUG) {
     const as = navigator.audioSession;
     box.textContent = [
       "iOS " + (ios ? ios.replace(/_/g, ".") : "-") + " | audioSession " + (as ? as.type : "MISSING"),
-      "sound " + (MUTED ? "MUTED" : "on") + " | context " + (ac ? ac.state : "not created") + " | listening " + listening,
+      "sound " + (MUTED ? "MUTED" : "on") + " | context " + (ac ? ac.state : "not created") + " | listening " + listening +
+        (listener ? " | heard " + (listener.n / listener.rate).toFixed(1) + " s" : ""),
       "silent-switch helper " + (!IS_IOS || (as && true) ? "not used" : unmuteEl ? (unmuteEl.paused ? "paused" : "playing") : "not started") +
         " | watch track " + (player ? (player.paused ? "paused" : "playing") : "off"),
       "keep awake " + (awakeWanted ? "WANTED" : "off") + " | wake lock " + ("wakeLock" in navigator ? (wakeLock ? "held" : "not held") : "unsupported") +
