@@ -1,0 +1,10 @@
+solver/gen
+solver/sim
+solver/brute
+solver/probe
+solver/probe2
+solver/native_test
+solver/*.wasm
+solver/p1*.txt
+solver/book/
+*.log

@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#eef2f8">
+<title>Connect 4</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231f5fd9'/%3E%3Ccircle cx='16' cy='16' r='10' fill='%23e5383b'/%3E%3Ccircle cx='16' cy='16' r='6.5' fill='none' stroke='%23b8262a' stroke-width='2'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #eef2f8;
+  --board: #1f5fd9;
+  --board-edge: #174cb4;
+  --hole: #eef2f8;
+  --hole-ring: #13429e;
+  --p1: #e5383b;
+  --p1-edge: #b8262a;
+  --p2: #fcc419;
+  --p2-edge: #d9a20c;
+  --screw: #dfe7f6;
+  --screw-slot: #6f87b8;
+  --ui: #1f5fd9;
+  --radius: 26px;
+}
+html[data-theme="flat"] {
+  --bg: #f7f3ec;
+  --board: #ffffff;
+  --board-edge: #ffffff;
+  --hole: #efe9df;
+  --hole-ring: #e4dccf;
+  --p1: #f2545b;
+  --p1-edge: #f2545b;
+  --p2: #f7b32b;
+  --p2-edge: #f7b32b;
+  --screw: #efe9df;
+  --screw-slot: #cfc5b5;
+  --ui: #3a3a3a;
+  --radius: 30px;
+}
+html[data-theme="night"] {
+  --bg: #0e1222;
+  --board: #1a2142;
+  --board-edge: #252e5a;
+  --hole: #0e1222;
+  --hole-ring: #2d3870;
+  --p1: #ff4f6d;
+  --p1-edge: #c9324e;
+  --p2: #ffd34e;
+  --p2-edge: #d4a92c;
+  --screw: #2a3466;
+  --screw-slot: #4d5b9c;
+  --ui: #8fa2ff;
+  --radius: 26px;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  overflow: hidden;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+}
+main {
+  width: min(94vw, 560px, calc((100dvh - 120px) * 0.84));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+}
+svg#game { width: 100%; height: auto; display: block; overflow: visible; cursor: pointer; }
+.board { fill: var(--board); }
+.ring { fill: none; stroke: var(--hole-ring); stroke-width: 5; transition: stroke .25s; }
+.p1 .face { fill: var(--p1); }
+.p1 .rim { stroke: var(--p1-edge); }
+.p2 .face { fill: var(--p2); }
+.p2 .rim { stroke: var(--p2-edge); }
+.rim { fill: none; stroke-width: 6; opacity: .9; }
+.disc.dim { opacity: .35; transition: opacity .4s; }
+.disc.win .face { animation: pulse 1s ease-in-out infinite alternate; }
+@keyframes pulse { from { filter: brightness(1); } to { filter: brightness(1.25); } }
+.win-ring { fill: none; stroke: #fff; stroke-width: 6; opacity: .9; }
+.screw circle { fill: var(--screw); }
+.screw line { stroke: var(--screw-slot); stroke-width: 3; stroke-linecap: round; }
+#preview { transition: transform .12s ease-out, opacity .15s; }
+#preview.hidden { opacity: 0; }
+
+.bar { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 0 6px; }
+.turn { display: flex; gap: 12px; align-items: center; }
+.chip {
+  width: 30px; height: 30px; border-radius: 50%;
+  transform: scale(.72); opacity: .45;
+  transition: transform .2s, opacity .2s, box-shadow .2s;
+}
+.chip.p1 { background: var(--p1); box-shadow: inset 0 0 0 4px var(--p1-edge); }
+.chip.p2 { background: var(--p2); box-shadow: inset 0 0 0 4px var(--p2-edge); }
+.chip.on { transform: scale(1); opacity: 1; }
+.chip.won { animation: bob .7s ease-in-out infinite alternate; }
+@keyframes bob { from { transform: scale(1) translateY(0); } to { transform: scale(1.08) translateY(-4px); } }
+button#restart {
+  width: 44px; height: 44px; border: 0; border-radius: 50%;
+  background: transparent; color: var(--ui); cursor: pointer;
+  display: grid; place-items: center; opacity: .8;
+}
+button#restart:active { transform: rotate(-40deg); }
+button#restart.nudge { animation: nudge 1.2s ease-in-out infinite; }
+@keyframes nudge { 50% { transform: rotate(-30deg); opacity: 1; } }
+</style>
+</head>
+<body>
+<main>
+  <svg id="game" viewBox="0 0 740 780" aria-label="Connect 4 board">
+    <defs>
+      <mask id="holes">
+        <rect x="0" y="100" width="740" height="680" fill="#fff"/>
+        <g id="hole-mask"></g>
+      </mask>
+      <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+        <feDropShadow dx="0" dy="14" stdDeviation="16" flood-opacity=".22"/>
+      </filter>
+    </defs>
+    <g id="preview" class="disc p1"><circle class="face" r="40"/><circle class="rim" r="29"/></g>
+    <g id="discs"></g>
+    <g filter="url(#shadow)">
+      <rect class="board" x="0" y="100" width="740" height="680" rx="34" mask="url(#holes)"/>
+    </g>
+    <g id="rings"></g>
+    <g id="screws"></g>
+    <g id="wins"></g>
+    <rect id="hit" x="0" y="0" width="740" height="780" fill="transparent"/>
+  </svg>
+  <div class="bar">
+    <div class="turn"><div class="chip p1 on" id="c1"></div><div class="chip p2" id="c2"></div></div>
+    <button id="restart" aria-label="New game">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
+    </button>
+  </div>
+</main>
+
+<script>
+"use strict";
+// ---------------------------------------------------------------------------
+// Settings (kept out of sight): ?theme=classic|flat|night  ?tell=rest|screw|shade|off
+// Both are remembered on this device.
+// ---------------------------------------------------------------------------
+const params = new URLSearchParams(location.search);
+function setting(name, allowed, fallback) {
+  let v = params.get(name);
+  try {
+    if (v && allowed.includes(v)) localStorage.setItem("c4-" + name, v);
+    else v = localStorage.getItem("c4-" + name);
+  } catch (e) {}
+  return allowed.includes(v) ? v : fallback;
+}
+const THEME = setting("theme", ["classic", "flat", "night"], "classic");
+const TELL = setting("tell", ["rest", "screw", "shade", "off"], "rest");
+document.documentElement.dataset.theme = THEME;
+document.querySelector('meta[name="theme-color"]').content =
+  getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
+
+// ---------------------------------------------------------------------------
+// Geometry
+// ---------------------------------------------------------------------------
+const COLS = 7, ROWS = 6, CELL = 100, PAD = 20, TOP = 100;
+const SVGNS = "http://www.w3.org/2000/svg";
+const cx = c => PAD + CELL / 2 + c * CELL;
+const cy = r => TOP + PAD + CELL / 2 + (ROWS - 1 - r) * CELL; // r = 0 is the bottom row
+const PREVIEW_Y = 50;
+const svg = document.getElementById("game");
+const el = (tag, attrs, parent) => {
+  const n = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(n);
+  return n;
+};
+
+const holeMask = document.getElementById("hole-mask");
+const ringsG = document.getElementById("rings");
+const rings = [];
+for (let c = 0; c < COLS; c++) {
+  rings.push([]);
+  for (let r = 0; r < ROWS; r++) {
+    el("circle", { cx: cx(c), cy: cy(r), r: 40, fill: "#000" }, holeMask);
+    rings[c].push(el("circle", { class: "ring", cx: cx(c), cy: cy(r), r: 41.5 }, ringsG));
+  }
+}
+
+// Decorative screws along the bottom rail. Each sits at its own "random"
+// angle; the tell turns one slot exactly vertical.
+const SCREW_ANGLES = [24, 152, 38, 166, 12, 141, 30];
+const screwsG = document.getElementById("screws");
+const screws = SCREW_ANGLES.map((a, c) => {
+  const g = el("g", { class: "screw", transform: `translate(${cx(c)} ${TOP + 6 * CELL + PAD + 30})` }, screwsG);
+  el("circle", { r: 8 }, g);
+  const slot = el("line", { x1: -5, y1: 0, x2: 5, y2: 0, transform: `rotate(${a})` }, g);
+  return slot;
+});
+
+// ---------------------------------------------------------------------------
+// Game state
+// ---------------------------------------------------------------------------
+let grid, heights, discEls, moves, turn, over, busy, hint, solveId = 0;
+const discsG = document.getElementById("discs");
+const winsG = document.getElementById("wins");
+const preview = document.getElementById("preview");
+let hoverCol = null;
+
+function newGame() {
+  grid = Array.from({ length: COLS }, () => Array(ROWS).fill(0));
+  heights = Array(COLS).fill(0);
+  discEls = Array.from({ length: COLS }, () => Array(ROWS).fill(null));
+  moves = "";
+  turn = 1;
+  over = false;
+  busy = false;
+  discsG.textContent = "";
+  winsG.textContent = "";
+  document.getElementById("restart").classList.remove("nudge");
+  document.getElementById("c1").classList.remove("won");
+  document.getElementById("c2").classList.remove("won");
+  solveId++;
+  setHint(null);
+  updateTurn();
+  requestHint();
+}
+
+function updateTurn() {
+  document.getElementById("c1").classList.toggle("on", over ? over === 1 : turn === 1);
+  document.getElementById("c2").classList.toggle("on", over ? over === 2 : turn === 2);
+  preview.setAttribute("class", "disc p" + turn + (over || busy ? " hidden" : ""));
+  placePreview();
+}
+
+function placePreview() {
+  let c = hoverCol;
+  if (c === null) {
+    // Resting position when no pointer is over the board.
+    if (turn === 1 && hint !== null && TELL === "rest") c = hint;
+    else c = lastCol !== null ? lastCol : 3;
+  }
+  preview.setAttribute("transform", `translate(${cx(c)} ${PREVIEW_Y})`);
+}
+let lastCol = null;
+
+function makeDisc(player) {
+  const g = el("g", { class: "disc p" + player }, discsG);
+  el("circle", { class: "face", r: 40 }, g);
+  el("circle", { class: "rim", r: 29 }, g);
+  return g;
+}
+
+function drop(c) {
+  if (over || busy || heights[c] >= ROWS) return;
+  const r = heights[c]++;
+  const player = turn;
+  grid[c][r] = player;
+  moves += c + 1;
+  lastCol = c;
+  busy = true;
+  setHint(null);
+  const disc = makeDisc(player);
+  discEls[c][r] = disc;
+  const y0 = PREVIEW_Y, y1 = cy(r);
+  const x = cx(c);
+  // simple gravity with one small bounce
+  const g = 0.0042, dist = y1 - y0;
+  const tFall = Math.sqrt(2 * dist / g);
+  const vImpact = g * tFall, vBounce = vImpact * 0.18, tBounce = 2 * vBounce / g;
+  const start = performance.now();
+  disc.setAttribute("transform", `translate(${x} ${y0})`);
+  turn = 3 - player;
+  updateTurn();
+  if (!checkWin(c, r, player) && moves.length < COLS * ROWS) requestHint();
+  (function frame(now) {
+    const t = now - start;
+    let y;
+    if (t < tFall) y = y0 + 0.5 * g * t * t;
+    else if (t < tFall + tBounce) { const u = t - tFall; y = y1 - (vBounce * u - 0.5 * g * u * u); }
+    else y = y1;
+    disc.setAttribute("transform", `translate(${x} ${y})`);
+    if (t < tFall + tBounce) requestAnimationFrame(frame);
+    else { busy = false; afterDrop(c, r, player); }
+  })(start);
+}
+
+function afterDrop(c, r, player) {
+  const line = checkWin(c, r, player);
+  if (line) {
+    over = player;
+    const inLine = new Set(line.map(([cc, rr]) => discEls[cc][rr]));
+    for (const n of discsG.children) if (!inLine.has(n)) n.classList.add("dim");
+    for (const [cc, rr] of line) {
+      el("circle", { class: "win-ring", cx: cx(cc), cy: cy(rr), r: 22 }, winsG);
+    }
+    document.getElementById("c" + player).classList.add("won");
+    document.getElementById("restart").classList.add("nudge");
+  } else if (moves.length === COLS * ROWS) {
+    over = 3;
+    document.getElementById("restart").classList.add("nudge");
+  }
+  updateTurn();
+  showHint();
+}
+
+function checkWin(c, r, p) {
+  const dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
+  for (const [dc, dr] of dirs) {
+    const line = [[c, r]];
+    for (const s of [1, -1]) {
+      let x = c + s * dc, y = r + s * dr;
+      while (x >= 0 && x < COLS && y >= 0 && y < ROWS && grid[x][y] === p) {
+        line.push([x, y]);
+        x += s * dc; y += s * dr;
+      }
+    }
+    if (line.length >= 4) return line;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// The secret: best column for the first player (the magician)
+// ---------------------------------------------------------------------------
+let pendingHint = null;
+function setHint(c) {
+  hint = c;
+  // clear every tell
+  screws.forEach((s, i) => s.setAttribute("transform", `rotate(${SCREW_ANGLES[i]})`));
+  rings.forEach(col => col.forEach(ring => ring.style.stroke = ""));
+  placePreview();
+}
+function showHint() {
+  if (busy || over || turn !== 1 || pendingHint === null) return;
+  if (pendingHint.moves !== moves) return;
+  const c = pendingHint.col;
+  hint = c;
+  if (TELL === "screw") screws[c].setAttribute("transform", "rotate(90)");
+  if (TELL === "shade") rings[c][heights[c]].style.stroke = "var(--board)";
+  placePreview();
+}
+function requestHint() {
+  pendingHint = null;
+  if (turn !== 1) return;
+  const id = ++solveId, seq = moves;
+  const fromBook = bookMove(seq);
+  if (fromBook !== null) { pendingHint = { moves: seq, col: fromBook }; showHint(); return; }
+  solver.then(w => {
+    w.onmessage = e => {
+      if (e.data.id !== solveId) return;
+      pendingHint = { moves: e.data.moves, col: e.data.col };
+      showHint();
+    };
+    w.postMessage({ id, moves: seq });
+  });
+}
+
+// Opening book: the magician's best move for every spectator reply, encoded
+// as a depth-first walk of the strategy tree (one digit per magician turn).
+const BOOK_PLY = /*BOOK_PLY*/0;
+const BOOK_DATA = "/*BOOK_DATA*/";
+const book = new Map();
+(function decodeBook() {
+  if (!BOOK_DATA || BOOK_DATA[0] === "/") return;
+  const g = Array.from({ length: COLS }, () => Array(ROWS).fill(0));
+  const h = Array(COLS).fill(0);
+  let i = 0;
+  const wins = (c, r, p) => {
+    for (const [dc, dr] of [[1, 0], [0, 1], [1, 1], [1, -1]]) {
+      let n = 1;
+      for (const s of [1, -1]) {
+        let x = c + s * dc, y = r + s * dr;
+        while (x >= 0 && x < COLS && y >= 0 && y < ROWS && g[x][y] === p) { n++; x += s * dc; y += s * dr; }
+      }
+      if (n >= 4) return true;
+    }
+    return false;
+  };
+  const node = (seq, ply) => {           // magician to move
+    if (ply > BOOK_PLY) return;
+    const b = BOOK_DATA.charCodeAt(i++) - 48;
+    book.set(seq, b);
+    const rb = h[b]++; g[b][rb] = 1;
+    if (!wins(b, rb, 1)) {
+      for (let c = 0; c < COLS; c++) {
+        if (h[c] >= ROWS) continue;
+        const rc = h[c]++; g[c][rc] = 2;
+        if (!wins(c, rc, 2)) node(seq + (b + 1) + (c + 1), ply + 2);
+        g[c][rc] = 0; h[c]--;
+      }
+    }
+    g[b][rb] = 0; h[b]--;
+  };
+  node("", 0);
+})();
+function bookMove(seq) { return book.has(seq) ? book.get(seq) : null; }
+
+// Perfect solver (C compiled to WebAssembly) running in a worker.
+const WASM_B64 = "/*WASM_B64*/";
+const solver = new Promise(resolve => {
+  const src = `
+    let ex;
+    onmessage = async e => {
+      if (e.data.wasm) { ex = (await WebAssembly.instantiate(e.data.wasm)).instance.exports; postMessage({ ready: 1 }); return; }
+      const { id, moves } = e.data;
+      ex.c4_reset();
+      for (const ch of moves) ex.c4_play(ch.charCodeAt(0) - 49);
+      const col = ex.c4_best_limited(3e7);
+      postMessage({ id, moves, col, score: ex.c4_score() });
+    };`;
+  const w = new Worker(URL.createObjectURL(new Blob([src], { type: "text/javascript" })));
+  const bytes = Uint8Array.from(atob(WASM_B64), ch => ch.charCodeAt(0));
+  w.onmessage = e => { if (e.data.ready) resolve(w); };
+  w.postMessage({ wasm: bytes });
+});
+
+// ---------------------------------------------------------------------------
+// Input
+// ---------------------------------------------------------------------------
+function colAt(evt) {
+  const pt = svg.createSVGPoint();
+  pt.x = evt.clientX; pt.y = evt.clientY;
+  const p = pt.matrixTransform(svg.getScreenCTM().inverse());
+  const c = Math.floor((p.x - PAD) / CELL);
+  return Math.max(0, Math.min(COLS - 1, c));
+}
+svg.addEventListener("pointermove", e => {
+  if (e.pointerType !== "mouse") return;
+  hoverCol = colAt(e);
+  placePreview();
+});
+svg.addEventListener("pointerleave", () => { hoverCol = null; placePreview(); });
+svg.addEventListener("click", e => drop(colAt(e)));
+document.getElementById("restart").addEventListener("click", newGame);
+
+newGame();
+</script>
+</body>
+</html>
