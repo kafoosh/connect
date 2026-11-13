@@ -97,7 +97,9 @@ the same page can hear it and copy that board:
    permission (Settings → Safari → Microphone, or the "aA" menu → Website
    Settings) and that the page is opened over https. Holding restart again
    stops listening. Put the phone face down. It keeps the
-   screen awake, and it must stay on this page.
+   screen awake (it won't auto-lock while listening, nor after the reveal
+   until you tap it), but don't press the side button, and it must stay on
+   this page.
 2. **Game phone** (borrowed, sound on, volume up): the spectator plays a game.
    When it ends, "Red wins" (or "Yellow wins") pops up with confetti and the chime plays.
 3. The prediction phone hears the chime, stops listening and shows that

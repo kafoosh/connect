@@ -991,32 +991,77 @@ class ChimeListener {
 }
 
 let micStarting = false;
-let listening = false, mic = null, proc = null, wakeLock = null, listener = null;
-async function keepAwake() {
-  try { if ("wakeLock" in navigator && document.visibilityState === "visible") wakeLock = await navigator.wakeLock.request("screen"); } catch (e) {}
+let listening = false, mic = null, proc = null, listener = null;
+
+// ---- Keep the screen on while listening (and until the phone is picked up) ----
+// Two layers: the Screen Wake Lock API (asked for inside the tap, which Safari
+// requires), and, as a backup, a tiny invisible muted looping video, which also
+// stops iPhones from auto-locking (the NoSleep.js technique).
+const NOSLEEP_MP4 = "data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAANDbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAD6AAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAm10cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAD6AAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAABAAAAAQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAA+gAAAAAAABAAAAAAHlbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAABAAAABAABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABkG1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAVBzdGJsAAAAuHN0c2QAAAAAAAAAAQAAAKhhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAABAAEABIAAAASAAAAAAAAAABFUxhdmM2MC4zMS4xMDIgbGlieDI2NAAAAAAAAAAAAAAAGP//AAAALmF2Y0MBQsAe/+EAFmdCwB7ZHsBEAAADAAQAAAMAEDxYuSABAAVoy4PLIAAAABBwYXNwAAAAAQAAAAEAAAAUYnRydAAAAAAAAAWOAAAFjgAAABhzdHRzAAAAAAAAAAEAAAAIAAAgAAAAABRzdHNzAAAAAAAAAAEAAAABAAAAHHN0c2MAAAAAAAAAAQAAAAEAAAAIAAAAAQAAADRzdHN6AAAAAAAAAAAAAAAIAAAChgAAAAoAAAAKAAAACQAAAAkAAAAJAAAACQAAAAkAAAAUc3RjbwAAAAAAAAABAAADcwAAAGJ1ZHRhAAAAWm1ldGEAAAAAAAAAIWhkbHIAAAAAAAAAAG1kaXJhcHBsAAAAAAAAAAAAAAAALWlsc3QAAAAlqXRvbwAAAB1kYXRhAAAAAQAAAABMYXZmNjAuMTYuMTAwAAAACGZyZWUAAALPbWRhdAAAAnAGBf//bNxF6b3m2Ui3lizYINkj7u94MjY0IC0gY29yZSAxNjQgcjMxMDggMzFlMTlmOSAtIEguMjY0L01QRUctNCBBVkMgY29kZWMgLSBDb3B5bGVmdCAyMDAzLTIwMjMgLSBodHRwOi8vd3d3LnZpZGVvbGFuLm9yZy94MjY0Lmh0bWwgLSBvcHRpb25zOiBjYWJhYz0wIHJlZj0zIGRlYmxvY2s9MTowOjAgYW5hbHlzZT0weDE6MHgxMTEgbWU9aGV4IHN1Ym1lPTcgcHN5PTEgcHN5X3JkPTEuMDA6MC4wMCBtaXhlZF9yZWY9MSBtZV9yYW5nZT0xNiBjaHJvbWFfbWU9MSB0cmVsbGlzPTEgOHg4ZGN0PTAgY3FtPTAgZGVhZHpvbmU9MjEsMTEgZmFzdF9wc2tpcD0xIGNocm9tYV9xcF9vZmZzZXQ9LTIgdGhyZWFkcz0xIGxvb2thaGVhZF90aHJlYWRzPTEgc2xpY2VkX3RocmVhZHM9MCBucj0wIGRlY2ltYXRlPTEgaW50ZXJsYWNlZD0wIGJsdXJheV9jb21wYXQ9MCBjb25zdHJhaW5lZF9pbnRyYT0wIGJmcmFtZXM9MCB3ZWlnaHRwPTAga2V5aW50PTI1MCBrZXlpbnRfbWluPTIgc2NlbmVjdXQ9NDAgaW50cmFfcmVmcmVzaD0wIHJjX2xvb2thaGVhZD00MCByYz1jcmYgbWJ0cmVlPTEgY3JmPTIzLjAgcWNvbXA9MC42MCBxcG1pbj0wIHFwbWF4PTY5IHFwc3RlcD00IGlwX3JhdGlvPTEuNDAgYXE9MToxLjAwAIAAAAAOZYiEBX///w9FAAFC34AAAAAGQZo4CvqAAAAABkGaVAK+oAAAAAVBmmAV9QAAAAVBmoAU9QAAAAVBmqAU9QAAAAVBmsAU9QAAAAVBmuAS9Q==";
+let awakeWanted = false, awakeUntilTap = false, wakeLock = null, nosleepVideo = null;
+async function requestWakeLock() {
+  if (!awakeWanted || wakeLock || !("wakeLock" in navigator) || document.visibilityState !== "visible") return;
+  try {
+    wakeLock = await navigator.wakeLock.request("screen");
+    dbg("wake lock on");
+    wakeLock.addEventListener("release", () => {
+      dbg("wake lock released"); wakeLock = null;
+      if (awakeWanted && document.visibilityState === "visible") requestWakeLock();
+    });
+  } catch (e) { dbg("wake lock refused: " + e.name); }
 }
-document.addEventListener("visibilitychange", () => { if (listening && document.visibilityState === "visible") keepAwake(); });
+function awakeOn() {                              // call inside a tap
+  awakeWanted = true;
+  requestWakeLock();
+  if (!nosleepVideo) {
+    const v = nosleepVideo = document.createElement("video");
+    v.muted = true; v.loop = true; v.playsInline = true; v.disablePictureInPicture = true;
+    for (const a of ["muted", "playsinline", "webkit-playsinline", "disablepictureinpicture"]) v.setAttribute(a, "");
+    v.setAttribute("x-webkit-airplay", "deny");
+    v.style.cssText = "position:fixed;left:0;bottom:0;width:1px;height:1px;opacity:0;pointer-events:none";
+    v.src = NOSLEEP_MP4;
+    document.body.appendChild(v);
+  }
+  nosleepVideo.play().catch(e => dbg("keep-awake video: " + e.name));
+}
+function awakeOff() {
+  awakeWanted = false; awakeUntilTap = false;
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  if (nosleepVideo) nosleepVideo.pause();
+}
+document.addEventListener("visibilitychange", () => {
+  if (!awakeWanted || document.visibilityState !== "visible") return;
+  requestWakeLock();
+  if (nosleepVideo && nosleepVideo.paused) nosleepVideo.play().catch(() => {});
+});
+// Any tap while it should stay awake re-asserts it (a tap lets Safari grant it);
+// after a reveal, the first tap (picking the phone up) lets the screen sleep normally.
+for (const ev of ["touchend", "click"]) document.addEventListener(ev, () => {
+  if (awakeUntilTap) { awakeOff(); return; }
+  if (awakeWanted) { requestWakeLock(); if (nosleepVideo && nosleepVideo.paused) nosleepVideo.play().catch(() => {}); }
+}, { capture: true, passive: true });
 async function startListening() {
   if (micStarting) return;
+  awakeOn();                                      // first, while still inside the tap
   micStarting = true;
   const ctx = soundUnlock();                      // inside the tap; session = play-and-record
-  if (!ctx || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { micStarting = false; listenFailed(); return; }
+  if (!ctx || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { micStarting = false; awakeOff(); listenFailed(); return; }
   try {
     mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } });
   } catch (e) {
     try { mic = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e2) { mic = null; }
   }
   micStarting = false;
-  if (!mic) { syncSession(); listenFailed(); return; }
+  if (!mic) { syncSession(); awakeOff(); listenFailed(); return; }
   if (ctx.state !== "running") ctx.resume().catch(() => {});
   listening = true;
-  listener = new ChimeListener(ctx.sampleRate, g => { stopListening(); revealBoard(g); });
+  listener = new ChimeListener(ctx.sampleRate, g => { stopListening(true); revealBoard(g); });
   const src = ctx.createMediaStreamSource(mic);
   proc = ctx.createScriptProcessor(2048, 1, 1);
   proc.onaudioprocess = e => { if (listener) listener.feed(e.inputBuffer.getChannelData(0)); };
   const zero = ctx.createGain(); zero.gain.value = 0;
   src.connect(proc); proc.connect(zero); zero.connect(ctx.destination);
-  keepAwake();
+  requestWakeLock();
   updateTurn();                                   // the secret "it's listening" sign
 }
 // Couldn't listen (no microphone permission, or the page isn't on https):
@@ -1025,8 +1070,10 @@ function listenFailed() {
   const t = document.querySelector(".turn");
   t.animate([{ opacity: 1 }, { opacity: 0.15 }, { opacity: 1 }, { opacity: 0.15 }, { opacity: 1 }], { duration: 900 });
 }
-function stopListening() {
+// keepAwake: after a reveal, stay awake until the phone is picked up and tapped.
+function stopListening(keepAwake) {
   listening = false; listener = null;
+  if (keepAwake) awakeUntilTap = true; else awakeOff();
   if (proc) { proc.onaudioprocess = null; try { proc.disconnect(); } catch (e) {} proc = null; }
   if (mic) { mic.getTracks().forEach(t => t.stop()); mic = null; }
   syncSession();
@@ -1054,7 +1101,7 @@ function revealBoard(g) {
 (function () {
   const btn = document.getElementById("restart");
   const LONG = 650;
-  const toggle = () => { if (listening) stopListening(); else startListening(); };
+  const toggle = () => { if (listening) stopListening(false); else startListening(); };
   let touchAt = 0;
   btn.addEventListener("touchstart", e => { e.preventDefault(); touchAt = e.timeStamp || performance.now(); btn.classList.add("pressed"); }, { passive: false });
   btn.addEventListener("touchend", e => {
@@ -1119,6 +1166,8 @@ if (DEBUG) {
       "sound " + (MUTED ? "MUTED" : "on") + " | context " + (ac ? ac.state : "not created") + " | listening " + listening,
       "silent-switch helper " + (!IS_IOS || (as && true) ? "not used" : unmuteEl ? (unmuteEl.paused ? "paused" : "playing") : "not started") +
         " | watch track " + (player ? (player.paused ? "paused" : "playing") : "off"),
+      "keep awake " + (awakeWanted ? "WANTED" : "off") + " | wake lock " + ("wakeLock" in navigator ? (wakeLock ? "held" : "not held") : "unsupported") +
+        " | video " + (nosleepVideo ? (nosleepVideo.paused ? "paused" : "playing") : "-"),
       ...dbgLog,
     ].join("\n");
   }, 250);
