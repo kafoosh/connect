@@ -753,13 +753,14 @@ function legacyUnmute(on) {
 // pending by iOS, and later requests queue behind it, so audio never starts.
 // So: only ever start/resume inside such an event, and if the context is still
 // not running then, replace it with a fresh one created inside that event.
-let acBornAt = 0;
+let acBornAt = 0, acSession = "";
 function buildContext() {
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC) return null;
   if (ac) { try { ac.onstatechange = null; ac.close(); } catch (e) {} }
   try { ac = new AC(); } catch (e) { ac = null; return null; }
   acBornAt = performance.now();
+  acSession = wantedSession();          // iOS fixes a context's audio mode when it's created
   sfx = ac.createGain(); sfx.gain.value = 0.9; sfx.connect(ac.destination);
   ac.onstatechange = () => dbg("context " + ac.state);
   // Keep the engine busy with a constant silent signal, the way the play repo's
@@ -784,7 +785,12 @@ function buildContext() {
 function soundUnlock() {
   syncSession();                        // before the context starts, as iOS expects
   if (!ac || ac.state === "closed") buildContext();
-  else if (ac.state !== "running" && !listening && performance.now() - acBornAt > 1500) {
+  else if (!listening && acSession !== wantedSession()) {
+    // e.g. listening just ended (record mode -> playback) or sound was unmuted:
+    // an engine made under the old mode stays muted by the silent switch.
+    dbg("audio mode " + acSession + " -> " + wantedSession() + ": fresh context");
+    buildContext();
+  } else if (ac.state !== "running" && !listening && performance.now() - acBornAt > 1500) {
     dbg("stuck " + ac.state + ": fresh context");
     buildContext();
   }
