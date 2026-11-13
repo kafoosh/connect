@@ -584,7 +584,6 @@ function boardX(evt) {
 }
 // Press anywhere on the board to pick up the disc, slide to a column, let go to drop.
 svg.addEventListener("pointerdown", e => {
-  if (AUDIO) audioWake();
   if (over && !busy) return;                     // replay happens on release (see below)
   if (dragId !== null || over || busy || (e.pointerType === "mouse" && e.button !== 0)) return;
   dragId = e.pointerId;
@@ -608,7 +607,7 @@ function endDrag(e, dropIt) {
   placePreview();
 }
 svg.addEventListener("pointerup", e => {
-  if (dragId === null && over && !busy) { if (!MUTED) soundUnlock(); playChime(); return; }
+  if (dragId === null && over && !busy) { playChime(); return; }   // tap a finished board: chime again
   endDrag(e, true);
 });
 svg.addEventListener("pointercancel", e => endDrag(e, false));
@@ -621,16 +620,35 @@ document.getElementById("restart").addEventListener("click", e => {
   newGame();
 });
 
-// ---------------------------------------------------------------------------
-// Audio mode: the phone "plays" a silent track and the track title (shown in
-// Now Playing on a paired Apple Watch) carries the signal:
-//   "—"  spectator's turn     "1"–"7"  magician's column     "Win"/"Lost"/"Draw"
-// The small "123" button switches the mode on/off (remembered).
-// ---------------------------------------------------------------------------
-const labelsG = document.getElementById("labels");
-for (let c = 0; c < COLS; c++) el("text", { x: cx(c), y: -22 }, labelsG).textContent = c + 1;
+// ===========================================================================
+// AUDIO
+// Everything that makes or hears sound lives below:
+//   SilentTrack  one hidden, looping, silent <audio> element: carries the watch
+//                signal in "123" mode, and is the silent-switch fallback on old iOS
+//   Sound        the Web Audio engine: game sounds, the chime, the microphone
+//   (chime)      the acoustic modem that turns a board into a chime and back
+//   KeepAwake    stops the listening phone from auto-locking
+//   Listen       microphone listening on the prediction phone
+// plus one handler for the taps that iOS lets start audio.
+//
+// The iPhone rules this follows:
+//  * Audio may only START inside a real tap: a finger lifting (touchend, even
+//    after a drag), a click, a key press or a mouse press. A start asked for at
+//    any other time is left pending forever and blocks later ones.
+//  * The silent switch mutes Web Audio unless the page asks for "playback"
+//    audio (navigator.audioSession, iOS 16.4+); older iOS needs a media element
+//    playing instead. Media elements always ignore the switch.
+//  * An AudioContext keeps the audio mode it was created under, so when the
+//    mode changes (listening on/off, sound on/off) it is rebuilt at the next tap.
+//  * Turning the microphone on switches to "play-and-record", which can pause
+//    the engine; while the mic is live iOS lets the page restart it without a tap.
+// ===========================================================================
+const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const HAS_SESSION = "audioSession" in navigator;
+let MUTED = false;                         // the speaker button: game sounds + chime only
+try { MUTED = localStorage.getItem("c4-mute") === "1"; } catch (e) {}
+let listening = false;                     // the prediction phone is listening for a chime
 
-let player = null, npTitle = "\u2014";
 function silentWav(seconds) {
   const rate = 8000, n = rate * seconds, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
   const str = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
@@ -640,58 +658,69 @@ function silentWav(seconds) {
   str(36, "data"); v.setUint32(40, n * 2, true);       // samples stay 0: pure silence
   return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
 }
-function setSession(t) { try { const a = navigator.audioSession; if (a && a.type !== t) a.type = t; } catch (e) {} }
-// Artwork: a plain black square that never changes (the title carries the signal).
-let blackArt = null;
-function artwork() {
-  if (!blackArt) {
-    const cv = document.createElement("canvas");
-    cv.width = cv.height = 512;
-    const g = cv.getContext("2d");
-    g.fillStyle = "#000"; g.fillRect(0, 0, 512, 512);
-    blackArt = cv.toDataURL("image/png");
-  }
-  return blackArt;
-}
-function nowPlaying(title) {
-  npTitle = title;
-  if (!AUDIO || !player) return;
-  player.title = title; // Safari's fallback when Media Session metadata is unavailable
-  if (!("mediaSession" in navigator)) return;
-  try {
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title, artist: "", album: "",
-      artwork: [{ src: artwork(), sizes: "512x512", type: "image/png" }],
-    });
-    navigator.mediaSession.playbackState = "playing";
-  } catch (e) {}
-}
-// Must run inside a tap: iOS only starts playback from a user gesture.
-function audioWake() {
-  if (!player) {
-    player = new Audio(silentWav(30));
-    player.loop = true;
-    player.setAttribute("playsinline", "");
-    player.addEventListener("playing", () => nowPlaying(npTitle));
+
+// ---- SilentTrack ------------------------------------------------------------
+// In "123" mode its title (shown in Now Playing on a paired Apple Watch) is the
+// signal: "—" spectator's turn, "1"–"7" the magician's column, "Win"/"Lost"/"Draw".
+const SilentTrack = {
+  el: null, title: "—", art: null,
+  wanted() {
+    if (AUDIO) return true;
+    return IS_IOS && !HAS_SESSION && !MUTED && !listening && !document.hidden;
+  },
+  // The first start needs a tap; after that this just keeps it in step.
+  sync() {
+    if (!this.wanted()) { if (this.el && !this.el.paused) this.el.pause(); return; }
+    if (!this.el) this.create();
+    if (this.el.paused) this.el.play().catch(() => {});
+    this.publish();
+  },
+  create() {
+    const a = this.el = new Audio(silentWav(30));
+    a.loop = true;
+    a.setAttribute("playsinline", "");
+    a.setAttribute("x-webkit-airplay", "deny");
+    a.addEventListener("playing", () => this.publish());
     if ("mediaSession" in navigator) {
-      const keep = () => { if (AUDIO) player.play().catch(() => {}); };
-      for (const [a, h] of [["play", keep], ["pause", keep], ["stop", keep],
-                            ["nexttrack", null], ["previoustrack", null], ["seekbackward", null], ["seekforward", null]]) {
-        try { navigator.mediaSession.setActionHandler(a, h); } catch (e) {}
+      const keep = () => { if (this.wanted()) a.play().catch(() => {}); };  // the watch's pause can't stop it
+      for (const [act, h] of [["play", keep], ["pause", keep], ["stop", keep], ["nexttrack", null],
+                              ["previoustrack", null], ["seekbackward", null], ["seekforward", null]]) {
+        try { navigator.mediaSession.setActionHandler(act, h); } catch (e) {}
       }
     }
-  }
-  setSession("playback");
-  if (player.paused) player.play().catch(() => {});
-  nowPlaying(npTitle);
-}
+  },
+  setTitle(t) { this.title = t; this.publish(); },
+  publish() {
+    if (!this.el || !AUDIO) return;
+    this.el.title = this.title;            // Safari's fallback when Media Session is unavailable
+    if (!("mediaSession" in navigator)) return;
+    if (!this.art) {                       // a plain black square: only the title changes
+      const cv = document.createElement("canvas");
+      cv.width = cv.height = 512;
+      const g = cv.getContext("2d"); g.fillStyle = "#000"; g.fillRect(0, 0, 512, 512);
+      this.art = cv.toDataURL("image/png");
+    }
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({ title: this.title, artist: "", album: "",
+        artwork: [{ src: this.art, sizes: "512x512", type: "image/png" }] });
+      navigator.mediaSession.playbackState = "playing";
+    } catch (e) {}
+  },
+  clearTitle() { try { navigator.mediaSession.metadata = null; } catch (e) {} },
+};
+function nowPlaying(title) { SilentTrack.setTitle(title); }
+
+// ---- "123" mode ---------------------------------------------------------------
+const labelsG = document.getElementById("labels");
+for (let c = 0; c < COLS; c++) el("text", { x: cx(c), y: -22 }, labelsG).textContent = c + 1;
 function setAudioMode(on) {
   AUDIO = on;
   try { localStorage.setItem("c4-mode", on ? "audio" : "board"); } catch (e) {}
   document.documentElement.classList.toggle("audio", on);
   svg.setAttribute("viewBox", on ? "0 -70 740 850" : "0 0 740 780");
-  if (on) { legacyUnmute(false); audioWake(); }
-  else { if (player) { player.pause(); try { navigator.mediaSession.metadata = null; } catch (e) {} } syncSession(); }
+  if (!on) SilentTrack.clearTitle();
+  Sound.syncSession();
+  SilentTrack.sync();
   // redraw the signal for the current position in the new mode
   const p = pendingHint;
   setHint(null);
@@ -700,138 +729,92 @@ function setAudioMode(on) {
   showHint();
 }
 document.getElementById("nums").addEventListener("click", () => setAudioMode(!AUDIO));
-// iOS can pause the track (e.g. a call); the next tap anywhere restarts it.
-for (const ev of ["touchend", "click"]) {
-  document.addEventListener(ev, () => { if (AUDIO && (!player || player.paused)) audioWake(); }, { passive: true });
-}
 if (AUDIO) { document.documentElement.classList.add("audio"); svg.setAttribute("viewBox", "0 -70 740 850"); }
 
-// ---------------------------------------------------------------------------
-// Sound: plastic clicks and the winning chime (Web Audio, nothing to download).
-// The speaker button mutes these; it does not touch audio mode's silent track.
-// ---------------------------------------------------------------------------
-let MUTED = false;
-try { MUTED = localStorage.getItem("c4-mute") === "1"; } catch (e) {}
-let ac = null, sfx = null, noiseBuf = null;
-// iPhone silent switch: like the play repo, ask for the 'playback' audio session
-// (Safari 16.4+) so sound plays with the switch on. Claim it only while we need
-// it and hand it back ('auto') when muted or hidden, so other apps can resume.
-function wantedSession() {
-  if (listening || micStarting) return "play-and-record";
-  return !MUTED || AUDIO ? "playback" : "auto";
-}
-function syncSession() {
-  if (document.hidden && !listening && !AUDIO) setSession("auto");
-  else setSession(wantedSession());
-  legacyUnmute(!MUTED && !document.hidden && !listening);
-}
-// Older iOS without the Audio Session API: loop a silent <audio> element while
-// sound is on; a playing media element lets Web Audio ignore the silent switch.
-// (Not used where navigator.audioSession exists: there a second media element
-// can interrupt Web Audio, and the session type alone does the job, as in the
-// play repo. Not used in audio mode either, which has its own silent track.)
-const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-let unmuteEl = null;
-function legacyUnmute(on) {
-  if (!IS_IOS || "audioSession" in navigator) return;
-  if (on && !AUDIO) {
-    if (!unmuteEl) {
-      unmuteEl = document.createElement("audio");
-      unmuteEl.src = silentWav(1);
-      unmuteEl.loop = true;
-      unmuteEl.setAttribute("playsinline", "");
-      unmuteEl.setAttribute("x-webkit-airplay", "deny");
-      unmuteEl.disableRemotePlayback = true;
-      unmuteEl.preload = "auto";
+// ---- Sound --------------------------------------------------------------------
+const Sound = {
+  ctx: null, out: null, noise: null, mode: "", bornAt: 0, unlockedAt: 0, micStarting: false,
+  // The iOS audio mode the page needs right now.
+  wantedMode() {
+    if (listening || this.micStarting) return "play-and-record";
+    return !MUTED || AUDIO ? "playback" : "auto";
+  },
+  // Claim it while needed; hand it back when muted or off screen so other apps can play.
+  syncSession() {
+    const t = document.hidden && !listening && !AUDIO ? "auto" : this.wantedMode();
+    try { const as = navigator.audioSession; if (as && as.type !== t) as.type = t; } catch (e) {}
+  },
+  build() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (this.ctx) { try { this.ctx.onstatechange = null; this.ctx.close(); } catch (e) {} }
+    let ctx;
+    try { ctx = this.ctx = new AC(); } catch (e) { this.ctx = null; return; }
+    this.bornAt = performance.now();
+    this.mode = this.wantedMode();
+    this.out = ctx.createGain(); this.out.gain.value = 0.9; this.out.connect(ctx.destination);
+    ctx.onstatechange = () => dbg("engine " + ctx.state);
+    // A constant silent signal keeps the engine busy so iOS doesn't let it sleep
+    // between sounds (the play repo gets the same from its continuous music).
+    const keep = ctx.createConstantSource ? ctx.createConstantSource() : ctx.createOscillator(), kg = ctx.createGain();
+    kg.gain.value = 0; keep.connect(kg); kg.connect(ctx.destination); keep.start();
+    this.noise = ctx.createBuffer(1, Math.round(ctx.sampleRate * 0.25), ctx.sampleRate);
+    const d = this.noise.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    dbg("engine built (" + this.mode + ")");
+  },
+  // Call ONLY from inside a real tap: makes sure a running engine in the right mode exists.
+  unlock() {
+    this.syncSession();                    // before the engine starts, as iOS expects
+    const c = this.ctx;
+    if (!c || c.state === "closed") this.build();
+    else if (!listening && this.mode !== this.wantedMode()) { dbg("mode " + this.mode + " -> " + this.wantedMode()); this.build(); }
+    else if (!listening && c.state !== "running" && performance.now() - this.bornAt > 1500) { dbg("stuck: rebuild"); this.build(); }
+    if (this.ctx && this.ctx.state !== "running") {
+      this.unlockedAt = performance.now();
+      this.ctx.resume().then(() => dbg("resumed"), e => dbg("resume refused: " + e.name));
     }
-    if (unmuteEl.paused) unmuteEl.play().catch(() => {});
-  } else if (unmuteEl && !unmuteEl.paused) unmuteEl.pause();
-}
-// iPhone rule: Web Audio may only START inside a real tap - the moment a finger
-// lifts (touchend), a click, a key, or a mouse press. A start request made at
-// any other time (finger down, a timer, a sound due mid-animation) is left
-// pending by iOS, and later requests queue behind it, so audio never starts.
-// So: only ever start/resume inside such an event, and if the context is still
-// not running then, replace it with a fresh one created inside that event.
-let acBornAt = 0, acSession = "";
-function buildContext() {
-  const AC = window.AudioContext || window.webkitAudioContext;
-  if (!AC) return null;
-  if (ac) { try { ac.onstatechange = null; ac.close(); } catch (e) {} }
-  try { ac = new AC(); } catch (e) { ac = null; return null; }
-  acBornAt = performance.now();
-  acSession = wantedSession();          // iOS fixes a context's audio mode when it's created
-  sfx = ac.createGain(); sfx.gain.value = 0.9; sfx.connect(ac.destination);
-  ac.onstatechange = () => dbg("context " + ac.state);
-  // Keep the engine busy with a constant silent signal, the way the play repo's
-  // music does, so iOS doesn't let it fall asleep between sounds.
-  try {
-    const keep = ac.createConstantSource(), kg = ac.createGain();
-    keep.offset.value = 0; kg.gain.value = 0;
-    keep.connect(kg); kg.connect(ac.destination); keep.start();
-  } catch (e) {
-    const o = ac.createOscillator(), kg = ac.createGain();
-    kg.gain.value = 0; o.connect(kg); kg.connect(ac.destination); o.start();
-  }
-  noiseBuf = ac.createBuffer(1, Math.round(ac.sampleRate * 0.25), ac.sampleRate);
-  const d = noiseBuf.getChannelData(0);
-  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-  // a silent blip inside the tap fully wakes iOS audio
-  const s = ac.createBufferSource(); s.buffer = ac.createBuffer(1, 1, 22050); s.connect(ac.destination); s.start(0);
-  dbg("context created (" + ac.state + ")");
-  return ac;
-}
-// Call ONLY from inside a real tap (see above).
-function soundUnlock() {
-  syncSession();                        // before the context starts, as iOS expects
-  if (!ac || ac.state === "closed") buildContext();
-  else if (!listening && acSession !== wantedSession()) {
-    // e.g. listening just ended (record mode -> playback) or sound was unmuted:
-    // an engine made under the old mode stays muted by the silent switch.
-    dbg("audio mode " + acSession + " -> " + wantedSession() + ": fresh context");
-    buildContext();
-  } else if (ac.state !== "running" && !listening && performance.now() - acBornAt > 1500) {
-    dbg("stuck " + ac.state + ": fresh context");
-    buildContext();
-  }
-  if (ac && ac.state !== "running") ac.resume().then(() => dbg("resumed"), e => dbg("resume refused: " + e.name));
-  return ac;
-}
-// Only pause when leaving the page; starting again waits for the next tap.
-function syncAudio() {
-  syncSession();
-  if (ac && document.hidden && !listening) ac.suspend().catch(() => {});
-}
-document.addEventListener("visibilitychange", syncAudio);
-window.addEventListener("pageshow", syncAudio);
-window.addEventListener("pagehide", () => { if (ac && !listening) ac.suspend().catch(() => {}); if (!AUDIO && !listening) setSession("auto"); legacyUnmute(false); });
-// A sound can only be heard once the engine runs; never ask it to start from here.
-function canPlay() {
-  if (MUTED || !ac || ac.state !== "running") { if (!MUTED && ac) dbg("skipped: " + ac.state); return false; }
-  return true;
-}
-function tick() {                       // disc sliding into the next lane
-  if (!canPlay()) return;
-  dbg("tick (" + ac.state + ")");
-  const t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
-  o.type = "triangle"; o.frequency.setValueAtTime(1900, t); o.frequency.exponentialRampToValueAtTime(900, t + 0.025);
-  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.09, t + 0.002); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.03);
-  o.connect(g); g.connect(sfx); o.start(t); o.stop(t + 0.04);
-}
-function clack(strength) {              // disc landing (and its small bounce)
-  if (!canPlay()) return;
-  dbg("clack (" + ac.state + ")");
-  const t = ac.currentTime;
-  const n = ac.createBufferSource(); n.buffer = noiseBuf;
-  const bp = ac.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 2300; bp.Q.value = 1.4;
-  const g = ac.createGain();
-  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.32 * strength, t + 0.002); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.07);
-  n.connect(bp); bp.connect(g); g.connect(sfx); n.start(t); n.stop(t + 0.09);
-  const o = ac.createOscillator(), og = ac.createGain();
-  o.type = "sine"; o.frequency.setValueAtTime(340, t); o.frequency.exponentialRampToValueAtTime(140, t + 0.06);
-  og.gain.setValueAtTime(0.0001, t); og.gain.exponentialRampToValueAtTime(0.18 * strength, t + 0.003); og.gain.exponentialRampToValueAtTime(0.0001, t + 0.08);
-  o.connect(og); og.connect(sfx); o.start(t); o.stop(t + 0.1);
-}
+    return this.ctx;
+  },
+  // A sound plays if the engine runs, or is starting from a tap a moment ago.
+  // (Never ask it to start from here: outside a tap that would block it.)
+  ready() {
+    const c = this.ctx;
+    if (MUTED || !c) return false;
+    return c.state === "running" || (c.state === "suspended" && performance.now() - this.unlockedAt < 800);
+  },
+  tick() {                                 // disc sliding into the next lane
+    if (!this.ready()) return;
+    const c = this.ctx, t = c.currentTime, o = c.createOscillator(), g = c.createGain();
+    o.type = "triangle"; o.frequency.setValueAtTime(1900, t); o.frequency.exponentialRampToValueAtTime(900, t + 0.025);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.09, t + 0.002); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.03);
+    o.connect(g); g.connect(this.out); o.start(t); o.stop(t + 0.04);
+  },
+  clack(strength) {                        // disc landing (and its small bounce)
+    if (!this.ready()) return;
+    dbg("clack (" + this.ctx.state + ")");
+    const c = this.ctx, t = c.currentTime;
+    const n = c.createBufferSource(); n.buffer = this.noise;
+    const bp = c.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 2300; bp.Q.value = 1.4;
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.32 * strength, t + 0.002); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.07);
+    n.connect(bp); bp.connect(g); g.connect(this.out); n.start(t); n.stop(t + 0.09);
+    const o = c.createOscillator(), og = c.createGain();
+    o.type = "sine"; o.frequency.setValueAtTime(340, t); o.frequency.exponentialRampToValueAtTime(140, t + 0.06);
+    og.gain.setValueAtTime(0.0001, t); og.gain.exponentialRampToValueAtTime(0.18 * strength, t + 0.003); og.gain.exponentialRampToValueAtTime(0.0001, t + 0.08);
+    o.connect(og); og.connect(this.out); o.start(t); o.stop(t + 0.1);
+  },
+  // Leaving the page: pause (unless listening) and hand the audio mode back.
+  // Coming back needs nothing: the next tap restarts it.
+  onVisibility() {
+    this.syncSession();
+    if (this.ctx && document.hidden && !listening) this.ctx.suspend().catch(() => {});
+    SilentTrack.sync();
+  },
+};
+const tick = () => Sound.tick(), clack = s => Sound.clack(s);
+for (const [target, ev] of [[document, "visibilitychange"], [window, "pagehide"], [window, "pageshow"]])
+  target.addEventListener(ev, () => Sound.onVisibility());
 
 // ---- The chime is a tiny acoustic modem --------------------------------------
 // Payload: the final board (49 bits: per column, red discs + (2^height - 1), 7 bits)
@@ -904,8 +887,7 @@ function scheduleChime(ctx, dest, t0, sym) {
   return t + 0.95;
 }
 function playChime() {
-  if (!canPlay()) return;
-  scheduleChime(ac, sfx, ac.currentTime + 0.05, boardToSymbols(grid));
+  if (Sound.ready()) scheduleChime(Sound.ctx, Sound.out, Sound.ctx.currentTime + 0.05, boardToSymbols(grid));
 }
 
 // All 69 lines of four, used to sanity-check a received board.
@@ -1018,116 +1000,112 @@ class ChimeListener {
   }
 }
 
-let micStarting = false;
-let listening = false, mic = null, proc = null, listener = null;
+// ---- KeepAwake ------------------------------------------------------------------
+// Two layers: the Screen Wake Lock API (must be asked for inside a tap), and as
+// a backup a tiny invisible muted looping video with no sound track (the
+// NoSleep.js technique), which iOS doesn't treat as audio.
+const KeepAwake = {
+  wanted: false, untilTap: false, lock: null, video: null,
+  on() {                                   // inside a tap
+    this.wanted = true; this.untilTap = false;
+    this.requestLock();
+    if (!this.video) {
+      const v = this.video = document.createElement("video");
+      v.muted = true; v.loop = true; v.playsInline = true; v.disablePictureInPicture = true;
+      for (const a of ["muted", "playsinline", "webkit-playsinline", "disablepictureinpicture"]) v.setAttribute(a, "");
+      v.setAttribute("x-webkit-airplay", "deny");
+      v.style.cssText = "position:fixed;left:0;bottom:0;width:1px;height:1px;opacity:0;pointer-events:none";
+      v.src = "data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAANDbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAD6AAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAm10cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAD6AAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAABAAAAAQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAA+gAAAAAAABAAAAAAHlbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAABAAAABAABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABkG1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAVBzdGJsAAAAuHN0c2QAAAAAAAAAAQAAAKhhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAABAAEABIAAAASAAAAAAAAAABFUxhdmM2MC4zMS4xMDIgbGlieDI2NAAAAAAAAAAAAAAAGP//AAAALmF2Y0MBQsAe/+EAFmdCwB7ZHsBEAAADAAQAAAMAEDxYuSABAAVoy4PLIAAAABBwYXNwAAAAAQAAAAEAAAAUYnRydAAAAAAAAAWOAAAFjgAAABhzdHRzAAAAAAAAAAEAAAAIAAAgAAAAABRzdHNzAAAAAAAAAAEAAAABAAAAHHN0c2MAAAAAAAAAAQAAAAEAAAAIAAAAAQAAADRzdHN6AAAAAAAAAAAAAAAIAAAChgAAAAoAAAAKAAAACQAAAAkAAAAJAAAACQAAAAkAAAAUc3RjbwAAAAAAAAABAAADcwAAAGJ1ZHRhAAAAWm1ldGEAAAAAAAAAIWhkbHIAAAAAAAAAAG1kaXJhcHBsAAAAAAAAAAAAAAAALWlsc3QAAAAlqXRvbwAAAB1kYXRhAAAAAQAAAABMYXZmNjAuMTYuMTAwAAAACGZyZWUAAALPbWRhdAAAAnAGBf//bNxF6b3m2Ui3lizYINkj7u94MjY0IC0gY29yZSAxNjQgcjMxMDggMzFlMTlmOSAtIEguMjY0L01QRUctNCBBVkMgY29kZWMgLSBDb3B5bGVmdCAyMDAzLTIwMjMgLSBodHRwOi8vd3d3LnZpZGVvbGFuLm9yZy94MjY0Lmh0bWwgLSBvcHRpb25zOiBjYWJhYz0wIHJlZj0zIGRlYmxvY2s9MTowOjAgYW5hbHlzZT0weDE6MHgxMTEgbWU9aGV4IHN1Ym1lPTcgcHN5PTEgcHN5X3JkPTEuMDA6MC4wMCBtaXhlZF9yZWY9MSBtZV9yYW5nZT0xNiBjaHJvbWFfbWU9MSB0cmVsbGlzPTEgOHg4ZGN0PTAgY3FtPTAgZGVhZHpvbmU9MjEsMTEgZmFzdF9wc2tpcD0xIGNocm9tYV9xcF9vZmZzZXQ9LTIgdGhyZWFkcz0xIGxvb2thaGVhZF90aHJlYWRzPTEgc2xpY2VkX3RocmVhZHM9MCBucj0wIGRlY2ltYXRlPTEgaW50ZXJsYWNlZD0wIGJsdXJheV9jb21wYXQ9MCBjb25zdHJhaW5lZF9pbnRyYT0wIGJmcmFtZXM9MCB3ZWlnaHRwPTAga2V5aW50PTI1MCBrZXlpbnRfbWluPTIgc2NlbmVjdXQ9NDAgaW50cmFfcmVmcmVzaD0wIHJjX2xvb2thaGVhZD00MCByYz1jcmYgbWJ0cmVlPTEgY3JmPTIzLjAgcWNvbXA9MC42MCBxcG1pbj0wIHFwbWF4PTY5IHFwc3RlcD00IGlwX3JhdGlvPTEuNDAgYXE9MToxLjAwAIAAAAAOZYiEBX///w9FAAFC34AAAAAGQZo4CvqAAAAABkGaVAK+oAAAAAVBmmAV9QAAAAVBmoAU9QAAAAVBmqAU9QAAAAVBmsAU9QAAAAVBmuAS9Q==";
+      document.body.appendChild(v);
+    }
+    this.video.play().catch(e => dbg("keep-awake video: " + e.name));
+  },
+  off() {
+    this.wanted = this.untilTap = false;
+    if (this.lock) { this.lock.release().catch(() => {}); this.lock = null; }
+    if (this.video) this.video.pause();
+  },
+  async requestLock() {
+    if (!this.wanted || this.lock || !("wakeLock" in navigator) || document.hidden) return;
+    try {
+      this.lock = await navigator.wakeLock.request("screen");
+      this.lock.addEventListener("release", () => { this.lock = null; if (this.wanted && !document.hidden) this.requestLock(); });
+    } catch (e) { dbg("wake lock refused: " + e.name); }
+  },
+  reassert() {
+    if (!this.wanted) return;
+    this.requestLock();
+    if (this.video && this.video.paused) this.video.play().catch(() => {});
+  },
+  // After a reveal the screen stays on until the phone is picked up and tapped.
+  onTap() { if (this.untilTap) this.off(); else this.reassert(); },
+};
+document.addEventListener("visibilitychange", () => { if (!document.hidden) KeepAwake.reassert(); });
 
-// ---- Keep the screen on while listening (and until the phone is picked up) ----
-// Two layers: the Screen Wake Lock API (asked for inside the tap, which Safari
-// requires), and, as a backup, a tiny invisible muted looping video, which also
-// stops iPhones from auto-locking (the NoSleep.js technique).
-const NOSLEEP_MP4 = "data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAANDbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAD6AAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAm10cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAD6AAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAABAAAAAQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAA+gAAAAAAABAAAAAAHlbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAABAAAABAABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABkG1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAVBzdGJsAAAAuHN0c2QAAAAAAAAAAQAAAKhhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAABAAEABIAAAASAAAAAAAAAABFUxhdmM2MC4zMS4xMDIgbGlieDI2NAAAAAAAAAAAAAAAGP//AAAALmF2Y0MBQsAe/+EAFmdCwB7ZHsBEAAADAAQAAAMAEDxYuSABAAVoy4PLIAAAABBwYXNwAAAAAQAAAAEAAAAUYnRydAAAAAAAAAWOAAAFjgAAABhzdHRzAAAAAAAAAAEAAAAIAAAgAAAAABRzdHNzAAAAAAAAAAEAAAABAAAAHHN0c2MAAAAAAAAAAQAAAAEAAAAIAAAAAQAAADRzdHN6AAAAAAAAAAAAAAAIAAAChgAAAAoAAAAKAAAACQAAAAkAAAAJAAAACQAAAAkAAAAUc3RjbwAAAAAAAAABAAADcwAAAGJ1ZHRhAAAAWm1ldGEAAAAAAAAAIWhkbHIAAAAAAAAAAG1kaXJhcHBsAAAAAAAAAAAAAAAALWlsc3QAAAAlqXRvbwAAAB1kYXRhAAAAAQAAAABMYXZmNjAuMTYuMTAwAAAACGZyZWUAAALPbWRhdAAAAnAGBf//bNxF6b3m2Ui3lizYINkj7u94MjY0IC0gY29yZSAxNjQgcjMxMDggMzFlMTlmOSAtIEguMjY0L01QRUctNCBBVkMgY29kZWMgLSBDb3B5bGVmdCAyMDAzLTIwMjMgLSBodHRwOi8vd3d3LnZpZGVvbGFuLm9yZy94MjY0Lmh0bWwgLSBvcHRpb25zOiBjYWJhYz0wIHJlZj0zIGRlYmxvY2s9MTowOjAgYW5hbHlzZT0weDE6MHgxMTEgbWU9aGV4IHN1Ym1lPTcgcHN5PTEgcHN5X3JkPTEuMDA6MC4wMCBtaXhlZF9yZWY9MSBtZV9yYW5nZT0xNiBjaHJvbWFfbWU9MSB0cmVsbGlzPTEgOHg4ZGN0PTAgY3FtPTAgZGVhZHpvbmU9MjEsMTEgZmFzdF9wc2tpcD0xIGNocm9tYV9xcF9vZmZzZXQ9LTIgdGhyZWFkcz0xIGxvb2thaGVhZF90aHJlYWRzPTEgc2xpY2VkX3RocmVhZHM9MCBucj0wIGRlY2ltYXRlPTEgaW50ZXJsYWNlZD0wIGJsdXJheV9jb21wYXQ9MCBjb25zdHJhaW5lZF9pbnRyYT0wIGJmcmFtZXM9MCB3ZWlnaHRwPTAga2V5aW50PTI1MCBrZXlpbnRfbWluPTIgc2NlbmVjdXQ9NDAgaW50cmFfcmVmcmVzaD0wIHJjX2xvb2thaGVhZD00MCByYz1jcmYgbWJ0cmVlPTEgY3JmPTIzLjAgcWNvbXA9MC42MCBxcG1pbj0wIHFwbWF4PTY5IHFwc3RlcD00IGlwX3JhdGlvPTEuNDAgYXE9MToxLjAwAIAAAAAOZYiEBX///w9FAAFC34AAAAAGQZo4CvqAAAAABkGaVAK+oAAAAAVBmmAV9QAAAAVBmoAU9QAAAAVBmqAU9QAAAAVBmsAU9QAAAAVBmuAS9Q==";
-let awakeWanted = false, awakeUntilTap = false, wakeLock = null, nosleepVideo = null;
-async function requestWakeLock() {
-  if (!awakeWanted || wakeLock || !("wakeLock" in navigator) || document.visibilityState !== "visible") return;
-  try {
-    wakeLock = await navigator.wakeLock.request("screen");
-    dbg("wake lock on");
-    wakeLock.addEventListener("release", () => {
-      dbg("wake lock released"); wakeLock = null;
-      if (awakeWanted && document.visibilityState === "visible") requestWakeLock();
-    });
-  } catch (e) { dbg("wake lock refused: " + e.name); }
-}
-function awakeOn() {                              // call inside a tap
-  awakeWanted = true;
-  requestWakeLock();
-  if (!nosleepVideo) {
-    const v = nosleepVideo = document.createElement("video");
-    v.muted = true; v.loop = true; v.playsInline = true; v.disablePictureInPicture = true;
-    for (const a of ["muted", "playsinline", "webkit-playsinline", "disablepictureinpicture"]) v.setAttribute(a, "");
-    v.setAttribute("x-webkit-airplay", "deny");
-    v.style.cssText = "position:fixed;left:0;bottom:0;width:1px;height:1px;opacity:0;pointer-events:none";
-    v.src = NOSLEEP_MP4;
-    document.body.appendChild(v);
-  }
-  nosleepVideo.play().catch(e => dbg("keep-awake video: " + e.name));
-}
-function awakeOff() {
-  awakeWanted = false; awakeUntilTap = false;
-  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
-  if (nosleepVideo) nosleepVideo.pause();
-}
-document.addEventListener("visibilitychange", () => {
-  if (!awakeWanted || document.visibilityState !== "visible") return;
-  requestWakeLock();
-  if (nosleepVideo && nosleepVideo.paused) nosleepVideo.play().catch(() => {});
-});
-// Any tap while it should stay awake re-asserts it (a tap lets Safari grant it);
-// after a reveal, the first tap (picking the phone up) lets the screen sleep normally.
-for (const ev of ["touchend", "click"]) document.addEventListener(ev, () => {
-  if (awakeUntilTap) { awakeOff(); return; }
-  if (awakeWanted) { requestWakeLock(); if (nosleepVideo && nosleepVideo.paused) nosleepVideo.play().catch(() => {}); }
-}, { capture: true, passive: true });
-async function startListening() {
-  if (micStarting) return;
-  awakeOn();                                      // first, while still inside the tap
-  micStarting = true;
-  const ctx = soundUnlock();                      // inside the tap; session = play-and-record
-  if (!ctx || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { micStarting = false; awakeOff(); listenFailed(); return; }
-  try {
-    mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } });
-  } catch (e) {
-    try { mic = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e2) { mic = null; }
-  }
-  micStarting = false;
-  if (!mic) { syncSession(); awakeOff(); listenFailed(); return; }
-  listening = true;
-  attachMic();
-  // Turning the microphone on switches iOS into record mode, which can pause the
-  // audio engine that analyses it. While the mic is live iOS lets us restart the
-  // engine without a tap, so keep it running for as long as we listen; if it
-  // won't come back, rebuild it and plug the mic in again.
-  let stalled = 0;
-  clearInterval(micGuard);
-  micGuard = setInterval(() => {
-    if (!listening || !ac) return;
-    if (ac.state === "running") { stalled = 0; return; }
-    ac.resume().catch(() => {});
-    stalled += 0.5;
-    if (stalled >= 3) { dbg("listening engine stuck: rebuilding"); stalled = 0; buildContext(); attachMic(); }
-  }, 500);
-  requestWakeLock();
-  updateTurn();                                   // the secret "it's listening" sign
-}
-let micGuard = null;
-function attachMic() {
-  if (proc) { proc.onaudioprocess = null; try { proc.disconnect(); } catch (e) {} }
-  const ctx = ac;
-  listener = new ChimeListener(ctx.sampleRate, g => { stopListening(true); revealBoard(g); });
-  const src = ctx.createMediaStreamSource(mic);
-  proc = ctx.createScriptProcessor(2048, 1, 1);
-  proc.onaudioprocess = e => { if (listener) listener.feed(e.inputBuffer.getChannelData(0)); };
-  const zero = ctx.createGain(); zero.gain.value = 0;
-  src.connect(proc); proc.connect(zero); zero.connect(ctx.destination);
-  if (ctx.state !== "running") ctx.resume().catch(() => {});
-  dbg("mic attached (" + ctx.state + ", " + ctx.sampleRate + " Hz)");
-}
-// Couldn't listen (no microphone permission, or the page isn't on https):
-// the turn discs blink twice instead of flipping.
-function listenFailed() {
-  const t = document.querySelector(".turn");
-  t.animate([{ opacity: 1 }, { opacity: 0.15 }, { opacity: 1 }, { opacity: 0.15 }, { opacity: 1 }], { duration: 900 });
-}
-// keepAwake: after a reveal, stay awake until the phone is picked up and tapped.
-function stopListening(keepAwake) {
-  listening = false; listener = null;
-  clearInterval(micGuard); micGuard = null;
-  if (keepAwake) awakeUntilTap = true; else awakeOff();
-  if (proc) { proc.onaudioprocess = null; try { proc.disconnect(); } catch (e) {} proc = null; }
-  if (mic) { mic.getTracks().forEach(t => t.stop()); mic = null; }
-  syncSession();
-  updateTurn();
-}
+// ---- Listen -------------------------------------------------------------------
+const Listen = {
+  mic: null, proc: null, listener: null, guard: null,
+  async start() {                          // inside the long-press tap
+    if (Sound.micStarting || listening) return;
+    KeepAwake.on();
+    Sound.micStarting = true;
+    const ctx = Sound.unlock();            // rebuilt in play-and-record mode, inside the tap
+    let mic = null;
+    if (ctx && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      try {
+        mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } });
+      } catch (e) {
+        try { mic = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e2) {}
+      }
+    }
+    Sound.micStarting = false;
+    if (!mic) { Sound.syncSession(); KeepAwake.off(); this.failed(); return; }
+    this.mic = mic;
+    listening = true;
+    SilentTrack.sync();
+    this.attach();
+    // While the mic is live, keep the engine running (iOS allows it without a
+    // tap now); if it won't come back within 3 s, rebuild it and re-attach.
+    let stalled = 0;
+    this.guard = setInterval(() => {
+      const c = Sound.ctx;
+      if (!c || c.state === "running") { stalled = 0; return; }
+      c.resume().catch(() => {});
+      if ((stalled += 0.5) >= 3) { dbg("listening engine stuck: rebuild"); stalled = 0; Sound.build(); this.attach(); }
+    }, 500);
+    KeepAwake.requestLock();
+    updateTurn();                          // the secret "it's listening" sign
+  },
+  attach() {
+    if (this.proc) { this.proc.onaudioprocess = null; try { this.proc.disconnect(); } catch (e) {} }
+    const ctx = Sound.ctx;
+    this.listener = new ChimeListener(ctx.sampleRate, g => { this.stop(true); revealBoard(g); });
+    const src = ctx.createMediaStreamSource(this.mic);
+    this.proc = ctx.createScriptProcessor(2048, 1, 1);
+    this.proc.onaudioprocess = e => { if (this.listener) this.listener.feed(e.inputBuffer.getChannelData(0)); };
+    const zero = ctx.createGain(); zero.gain.value = 0;
+    src.connect(this.proc); this.proc.connect(zero); zero.connect(ctx.destination);
+    if (ctx.state !== "running") ctx.resume().catch(() => {});
+    dbg("mic attached (" + ctx.state + ", " + ctx.sampleRate + " Hz)");
+  },
+  // revealed: keep the screen on until the phone is picked up and tapped.
+  stop(revealed) {
+    listening = false;
+    clearInterval(this.guard); this.guard = null;
+    this.listener = null;
+    if (this.proc) { this.proc.onaudioprocess = null; try { this.proc.disconnect(); } catch (e) {} this.proc = null; }
+    if (this.mic) { this.mic.getTracks().forEach(t => t.stop()); this.mic = null; }
+    if (revealed) KeepAwake.untilTap = true; else KeepAwake.off();
+    Sound.syncSession();                   // the engine is rebuilt for playback at the next tap
+    SilentTrack.sync();
+    updateTurn();
+  },
+  toggle() { if (listening) this.stop(false); else this.start(); },
+  // No microphone (permission refused, or not https): the turn discs blink twice.
+  failed() {
+    document.querySelector(".turn").animate([{ opacity: 1 }, { opacity: 0.15 }, { opacity: 1 }, { opacity: 0.15 }, { opacity: 1 }], { duration: 900 });
+  },
+};
 // Show the received board as if the prediction game had ended that way.
 function revealBoard(g) {
   const order = movesFor(g);
@@ -1143,58 +1121,60 @@ function revealBoard(g) {
   setHint(null);
   afterDrop(last[0], last[1], last[2], true);
 }
-// Long-press the restart button (~0.7 s) to start/stop listening.
-// Touch is handled with touch events and preventDefault, so iOS can't turn the
-// hold into a text-selection / callout gesture (which cancels the press).
-// A short tap still starts a new game.
+// Long-press the restart button (~0.7 s) to start/stop listening; a short tap
+// is a new game. Touch is handled with touch events + preventDefault so iOS
+// can't turn the hold into a text-selection gesture (which cancels the press).
 (function () {
   const btn = document.getElementById("restart");
   const LONG = 650;
-  const toggle = () => { if (listening) stopListening(false); else startListening(); };
-  let touchAt = 0;
+  let touchAt = 0, downAt = 0;
+  const held = (e, from) => (e.timeStamp || performance.now()) - from;
   btn.addEventListener("touchstart", e => { e.preventDefault(); touchAt = e.timeStamp || performance.now(); btn.classList.add("pressed"); }, { passive: false });
   btn.addEventListener("touchend", e => {
     e.preventDefault();
     btn.classList.remove("pressed");
     if (!touchAt) return;
-    const held = (e.timeStamp || performance.now()) - touchAt;
+    const long = held(e, touchAt) >= LONG;
     touchAt = 0;
-    if (held >= LONG) toggle(); else newGame();
+    if (long) Listen.toggle(); else newGame();
   }, { passive: false });
   btn.addEventListener("touchcancel", e => {
     btn.classList.remove("pressed");
-    const held = (e.timeStamp || performance.now()) - touchAt;
-    if (touchAt && held >= LONG) toggle();
+    if (touchAt && held(e, touchAt) >= LONG) Listen.toggle();
     touchAt = 0;
   });
-  // mouse
-  let downAt = 0;
   btn.addEventListener("pointerdown", e => { if (e.pointerType === "mouse") downAt = e.timeStamp; });
   btn.addEventListener("pointerleave", e => { if (e.pointerType === "mouse") downAt = 0; });
   btn.addEventListener("pointerup", e => {
     if (e.pointerType !== "mouse") return;
-    if (downAt && e.timeStamp - downAt >= LONG) { btn.dataset.long = "1"; toggle(); }
+    if (downAt && e.timeStamp - downAt >= LONG) { btn.dataset.long = "1"; Listen.toggle(); }   // swallow the click
     downAt = 0;
   });
   btn.addEventListener("contextmenu", e => e.preventDefault());
 })();
 
-// Speaker button (next to the turn indicator).
+// ---- Speaker button -------------------------------------------------------------
 const soundBtn = document.getElementById("sound");
 function showSound() { soundBtn.classList.toggle("muted", MUTED); soundBtn.setAttribute("aria-label", MUTED ? "Sound off" : "Sound on"); }
 soundBtn.addEventListener("click", () => {
   MUTED = !MUTED;
   try { localStorage.setItem("c4-mute", MUTED ? "1" : "0"); } catch (e) {}
   showSound();
-  if (MUTED) syncSession(); else soundUnlock();
+  if (MUTED) Sound.syncSession(); else Sound.unlock();   // this click is a real tap
+  SilentTrack.sync();
 });
 showSound();
-// Events iOS accepts as a tap for starting audio. (A finger touching down is
-// not one of them; a finger lifting is, even at the end of a drag.)
-const unlockIfOn = () => { if (!MUTED || listening) soundUnlock(); };
-for (const ev of ["touchend", "click", "keydown"]) document.addEventListener(ev, unlockIfOn, { capture: true, passive: true });
-document.addEventListener("pointerdown", e => { if (e.pointerType === "mouse") unlockIfOn(); }, { capture: true, passive: true });
-document.addEventListener("pointerup", e => { if (e.pointerType !== "mouse") unlockIfOn(); }, { capture: true, passive: true });
+
+// ---- Taps -----------------------------------------------------------------------
+// The one place audio is started: every event iOS accepts as a tap.
+function onRealTap() {
+  KeepAwake.onTap();
+  if (!MUTED || listening) Sound.unlock();
+  SilentTrack.sync();
+}
+for (const ev of ["touchend", "click", "keydown"]) document.addEventListener(ev, onRealTap, { capture: true, passive: true });
+document.addEventListener("pointerdown", e => { if (e.pointerType === "mouse") onRealTap(); }, { capture: true, passive: true });
+document.addEventListener("pointerup", e => { if (e.pointerType !== "mouse") onRealTap(); }, { capture: true, passive: true });
 
 // ---------------------------------------------------------------------------
 // ?debug: a small panel with the audio state, to diagnose phones remotely.
@@ -1215,12 +1195,11 @@ if (DEBUG) {
     const as = navigator.audioSession;
     box.textContent = [
       "iOS " + (ios ? ios.replace(/_/g, ".") : "-") + " | audioSession " + (as ? as.type : "MISSING"),
-      "sound " + (MUTED ? "MUTED" : "on") + " | context " + (ac ? ac.state : "not created") + " | listening " + listening +
-        (listener ? " | heard " + (listener.n / listener.rate).toFixed(1) + " s" : ""),
-      "silent-switch helper " + (!IS_IOS || (as && true) ? "not used" : unmuteEl ? (unmuteEl.paused ? "paused" : "playing") : "not started") +
-        " | watch track " + (player ? (player.paused ? "paused" : "playing") : "off"),
-      "keep awake " + (awakeWanted ? "WANTED" : "off") + " | wake lock " + ("wakeLock" in navigator ? (wakeLock ? "held" : "not held") : "unsupported") +
-        " | video " + (nosleepVideo ? (nosleepVideo.paused ? "paused" : "playing") : "-"),
+      "sound " + (MUTED ? "MUTED" : "on") + " | engine " + (Sound.ctx ? Sound.ctx.state + " (" + Sound.mode + ")" : "not built") +
+        " | listening " + listening + (Listen.listener ? " | heard " + (Listen.listener.n / Listen.listener.rate).toFixed(1) + " s" : ""),
+      "silent track " + (SilentTrack.el ? (SilentTrack.el.paused ? "paused" : "playing") : "off") + (AUDIO ? " (123 mode)" : ""),
+      "keep awake " + (KeepAwake.wanted ? "WANTED" : "off") + " | wake lock " + ("wakeLock" in navigator ? (KeepAwake.lock ? "held" : "not held") : "unsupported") +
+        " | video " + (KeepAwake.video ? (KeepAwake.video.paused ? "paused" : "playing") : "-"),
       ...dbgLog,
     ].join("\n");
   }, 250);
