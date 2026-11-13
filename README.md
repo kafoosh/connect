@@ -59,6 +59,8 @@ Example: `index.html?theme=classic&tell=screw`
 - `solver/brute.c` — independent brute-force check of solver scores.
 - `solver/book12/` — the generated opening book (36,032 magician positions,
   every one of them a proven win).
+- `build.py` — compiles the WebAssembly, packs the book and writes
+  `index.html` from `web/index.src.html`.
 
 ### Verification
 
@@ -69,8 +71,6 @@ Example: `index.html?theme=classic&tell=screw`
 - Full games in the real page (headless Chromium, incl. touch emulation):
   every game won, signal appears within ~30 ms of the spectator's disc
   landing.
-- `build.py` — compiles the WebAssembly, packs the book and writes
-  `index.html` from `web/index.src.html`.
 
 ### Rebuild
 
