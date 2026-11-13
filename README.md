@@ -41,6 +41,32 @@ address bar stays clean afterwards):
 
 Nothing is shown during the spectator's turn.
 
+## Audio mode (Apple Watch)
+
+For performing without seeing the board: the spectator holds the phone away
+from you and plays both colours, dropping red wherever you call it. The phone
+"plays" a silent track, and the track title, which your Apple Watch shows in
+**Now Playing**, carries the signal:
+
+| Watch shows | Meaning |
+|---|---|
+| `—` | Spectator's turn, wait |
+| `1`–`7` | Call this column for red |
+| `Win` / `Lost` / `Draw` | Game over |
+
+- **Switch on/off:** press and hold the turn indicator (the two discs at the
+  bottom left) for about a second, then let go. The numbers 1–7 appear above
+  the columns, the on-board signal is turned off, and the track starts.
+  The phone remembers the mode, so after reopening the page, tap anywhere
+  once to restart the track (iPhone only starts audio from a tap).
+- **Before handing over:** check that your watch shows `—` or a number in
+  Now Playing. Turning on *Auto-Launch Audio Apps* on the watch
+  (Watch app → General → Auto-Launch) makes Now Playing open by itself.
+- The track is pure silence, so nothing is heard, but it does take over
+  audio: stop any music first. Pause on the watch is ignored so the signal
+  can't be stopped by accident; switch the mode off on the phone instead.
+- Your first move is always the centre (`4`).
+
 Themes: `?theme=classic` (default, blue board), `?theme=flat`, `?theme=night`.
 
 ![classic, flat and night themes](docs/designs.png)

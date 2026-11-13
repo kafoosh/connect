@@ -93,11 +93,14 @@ svg#game.dragging { cursor: grabbing; }
 #preview { transition: transform .12s ease-out, opacity .15s; }
 #preview.live { transition: opacity .15s; }
 #preview.hidden { opacity: 0; }
+#labels { display: none; }
+html.audio #labels { display: inline; }
+#labels text { fill: var(--ui); opacity: .75; font: 600 38px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; text-anchor: middle; }
 #lane { fill: var(--lane); opacity: 0; transition: opacity .15s; pointer-events: none; }
 #lane.on { opacity: 1; }
 
 .bar { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 0 6px; }
-.turn { display: flex; gap: 12px; align-items: center; }
+.turn { display: flex; gap: 12px; align-items: center; padding: 8px 0; -webkit-touch-callout: none; touch-action: none; }
 .chip {
   width: 30px; height: 30px; border-radius: 50%;
   transform: scale(.72); opacity: .45;
@@ -134,6 +137,7 @@ button#restart.nudge { animation: nudge 1.2s ease-in-out infinite; }
         <feDropShadow dx="0" dy="14" stdDeviation="16" flood-opacity=".22"/>
       </filter>
     </defs>
+    <g id="labels"></g>
     <g id="preview" class="disc p1"><circle class="face" r="40"/><circle class="rim" r="29"/></g>
     <g id="discs"></g>
     <g filter="url(#shadow)">
@@ -175,6 +179,9 @@ function setting(name, allowed, fallback) {
 }
 const THEME = setting("theme", ["classic", "flat", "night"], "classic");
 const TELL = setting("tell", ["rest", "screw", "shade", "off"], "shade");
+let AUDIO = false;                 // audio mode: the signal goes to the watch (see below)
+try { AUDIO = localStorage.getItem("c4-mode") === "audio"; } catch (e) {}
+const tell = () => (AUDIO ? "off" : TELL); // no on-board signal in audio mode
 document.documentElement.dataset.theme = THEME;
 document.querySelector('meta[name="theme-color"]').content =
   getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
@@ -289,7 +296,7 @@ function placePreview() {
   else {
     // Resting position when no pointer is over the board.
     let c;
-    if (turn === 1 && hint !== null && TELL === "rest") c = hint;
+    if (turn === 1 && hint !== null && tell() === "rest") c = hint;
     else c = lastCol !== null ? lastCol : 3;
     x = cx(c);
   }
@@ -357,6 +364,7 @@ function afterDrop(c, r, player) {
     over = 3;
     document.getElementById("restart").classList.add("nudge");
   }
+  if (over) nowPlaying(over === 1 ? "Win" : over === 2 ? "Lost" : "Draw");
   updateTurn();
   showHint();
 }
@@ -386,6 +394,7 @@ function setHint(c) {
   // clear every tell
   screws.forEach((s, i) => s.setAttribute("transform", `rotate(${SCREW_ANGLES[i]})`));
   rings.forEach(col => col.forEach(ring => ring.style.stroke = ""));
+  if (!over) nowPlaying("\u2014");
   placePreview();
 }
 function showHint() {
@@ -393,8 +402,9 @@ function showHint() {
   if (pendingHint.moves !== moves) return;
   const c = pendingHint.col;
   hint = c;
-  if (TELL === "screw") screws[c].setAttribute("transform", "rotate(90)");
-  if (TELL === "shade") rings[c][heights[c]].style.stroke = "var(--board)";
+  if (tell() === "screw") screws[c].setAttribute("transform", "rotate(90)");
+  if (tell() === "shade") rings[c][heights[c]].style.stroke = "var(--board)";
+  nowPlaying(String(c + 1));
   placePreview();
 }
 function requestHint() {
@@ -483,6 +493,7 @@ function boardX(evt) {
 }
 // Press anywhere on the board to pick up the disc, slide to a column, let go to drop.
 svg.addEventListener("pointerdown", e => {
+  if (AUDIO) audioWake();
   if (dragId !== null || over || busy || (e.pointerType === "mouse" && e.button !== 0)) return;
   dragId = e.pointerId;
   svg.setPointerCapture(e.pointerId);
@@ -511,6 +522,86 @@ svg.addEventListener("pointerleave", e => {
 });
 undoBtn.addEventListener("click", undo);
 document.getElementById("restart").addEventListener("click", newGame);
+
+// ---------------------------------------------------------------------------
+// Audio mode: the phone "plays" a silent track and the track title (shown in
+// Now Playing on a paired Apple Watch) carries the signal:
+//   "—"  spectator's turn     "1"–"7"  magician's column     "Win"/"Lost"/"Draw"
+// Hold the turn indicator for ~1 s to switch the mode on/off (remembered).
+// ---------------------------------------------------------------------------
+const labelsG = document.getElementById("labels");
+for (let c = 0; c < COLS; c++) el("text", { x: cx(c), y: -22 }, labelsG).textContent = c + 1;
+
+let player = null, npTitle = "\u2014";
+function silentWav(seconds) {
+  const rate = 8000, n = rate * seconds, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const str = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+  str(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); str(8, "WAVE");
+  str(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, "data"); v.setUint32(40, n * 2, true);       // samples stay 0: pure silence
+  return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+}
+function setSession(t) { try { const a = navigator.audioSession; if (a && a.type !== t) a.type = t; } catch (e) {} }
+function nowPlaying(title) {
+  npTitle = title;
+  if (!AUDIO || !player || !("mediaSession" in navigator)) return;
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({ title, artist: "", album: "" });
+    navigator.mediaSession.playbackState = "playing";
+  } catch (e) {}
+}
+// Must run inside a tap: iOS only starts playback from a user gesture.
+function audioWake() {
+  if (!player) {
+    player = new Audio(silentWav(30));
+    player.loop = true;
+    player.setAttribute("playsinline", "");
+    player.addEventListener("playing", () => nowPlaying(npTitle));
+    if ("mediaSession" in navigator) {
+      const keep = () => { if (AUDIO) player.play().catch(() => {}); };
+      for (const [a, h] of [["play", keep], ["pause", keep], ["stop", keep],
+                            ["nexttrack", null], ["previoustrack", null], ["seekbackward", null], ["seekforward", null]]) {
+        try { navigator.mediaSession.setActionHandler(a, h); } catch (e) {}
+      }
+    }
+  }
+  setSession("playback");
+  if (player.paused) player.play().catch(() => {});
+  nowPlaying(npTitle);
+}
+function setAudioMode(on) {
+  AUDIO = on;
+  try { localStorage.setItem("c4-mode", on ? "audio" : "board"); } catch (e) {}
+  document.documentElement.classList.toggle("audio", on);
+  svg.setAttribute("viewBox", on ? "0 -70 740 850" : "0 0 740 780");
+  if (on) audioWake();
+  else if (player) { player.pause(); setSession("auto"); try { navigator.mediaSession.metadata = null; } catch (e) {} }
+  // redraw the signal for the current position in the new mode
+  const p = pendingHint;
+  setHint(null);
+  pendingHint = p;
+  if (over) nowPlaying(over === 1 ? "Win" : over === 2 ? "Lost" : "Draw");
+  showHint();
+}
+// Long-press on the turn indicator toggles the mode. It fires on release, so
+// the switch (and the first play()) happens inside a user gesture, as iOS requires.
+(function () {
+  const t = document.querySelector(".turn");
+  let downAt = 0;
+  t.addEventListener("pointerdown", e => { downAt = e.timeStamp; });
+  t.addEventListener("pointerup", e => {
+    if (downAt && e.timeStamp - downAt > 850) setAudioMode(!AUDIO);
+    downAt = 0;
+  });
+  for (const ev of ["pointerleave", "pointercancel"]) t.addEventListener(ev, () => { downAt = 0; });
+  t.addEventListener("contextmenu", e => e.preventDefault());
+})();
+// iOS can pause the track (e.g. a call); the next tap anywhere restarts it.
+for (const ev of ["touchend", "click"]) {
+  document.addEventListener(ev, () => { if (AUDIO && (!player || player.paused)) audioWake(); }, { passive: true });
+}
+if (AUDIO) { document.documentElement.classList.add("audio"); svg.setAttribute("viewBox", "0 -70 740 850"); }
 
 newGame();
 </script>
