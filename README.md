@@ -38,6 +38,8 @@ Nothing is shown during the spectator's turn.
 
 Themes: `?theme=classic` (default, blue board), `?theme=flat`, `?theme=night`.
 
+![classic, flat and night themes](docs/designs.png)
+
 Example: `index.html?theme=classic&tell=screw`
 
 ## How it works
@@ -55,6 +57,18 @@ Example: `index.html?theme=classic&tell=screw`
 - `solver/sim.c` — plays thousands of games (random, "smart" and perfect-
   resistance spectators) to check the magician never fails to win.
 - `solver/brute.c` — independent brute-force check of solver scores.
+- `solver/book12/` — the generated opening book (36,032 magician positions,
+  every one of them a proven win).
+
+### Verification
+
+- Solver vs. brute force on 600 random late-game positions: 0 mismatches.
+- 40,300 simulated games (20,000 random spectator, 20,000 spectator that
+  takes wins and blocks threats, 300 spectator that plays perfectly to
+  resist): the magician won every one.
+- Full games in the real page (headless Chromium, incl. touch emulation):
+  every game won, signal appears within ~30 ms of the spectator's disc
+  landing.
 - `build.py` — compiles the WebAssembly, packs the book and writes
   `index.html` from `web/index.src.html`.
 

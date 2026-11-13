@@ -21,13 +21,44 @@ wasm_b64 = base64.b64encode(open(wasm, "rb").read()).decode()
 # Book: root move is the centre column (index 3); then the subtrees after
 # each spectator reply, in column order, as written by `gen BOOK_PLY 4<c>`.
 digits = ["3"]
+entries = [("", 3)]
 for c in range(1, 8):
-    path = os.path.join(ROOT, "solver", os.environ.get("BOOK_DIR", "book"), f"b4{c}.txt")
+    path = os.path.join(ROOT, "solver", os.environ.get("BOOK_DIR", "book12"), f"b4{c}.txt")
     for line in open(path):
         seq, best, score = line.split()
         if len(seq) <= BOOK_PLY:
             digits.append(best)
+            entries.append((seq, int(best)))
 book = "".join(digits)
+
+# Sanity check: replay the same depth-first walk the page uses and make sure
+# every book entry lines up with the position it was computed for.
+def verify(entries):
+    g = [[0] * 6 for _ in range(7)]; h = [0] * 7; it = iter(entries)
+    def wins(c, r, p):
+        for dc, dr in ((1, 0), (0, 1), (1, 1), (1, -1)):
+            n = 1
+            for s in (1, -1):
+                x, y = c + s * dc, r + s * dr
+                while 0 <= x < 7 and 0 <= y < 6 and g[x][y] == p:
+                    n += 1; x += s * dc; y += s * dr
+            if n >= 4: return True
+        return False
+    def node(seq, ply):
+        if ply > BOOK_PLY: return
+        eseq, b = next(it)
+        assert eseq == seq, (eseq, seq)
+        rb = h[b]; h[b] += 1; g[b][rb] = 1
+        if not wins(b, rb, 1):
+            for c in range(7):
+                if h[c] >= 6: continue
+                rc = h[c]; h[c] += 1; g[c][rc] = 2
+                if not wins(c, rc, 2): node(seq + str(b + 1) + str(c + 1), ply + 2)
+                g[c][rc] = 0; h[c] -= 1
+        g[b][rb] = 0; h[b] -= 1
+    node("", 0)
+    assert next(it, None) is None, "trailing book entries"
+verify(entries)
 
 src = open(os.path.join(ROOT, "web", "index.src.html")).read()
 out = (src.replace('"/*WASM_B64*/"', '"' + wasm_b64 + '"')
