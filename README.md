@@ -6,6 +6,11 @@ spectator move the page secretly shows the magician the column that wins.
 
 Open `index.html` (works offline, straight from the file, or on GitHub Pages).
 
+Controls: press on the board to pick up the disc, slide it to a column (that
+column is softly highlighted) and let go to drop it; a quick tap drops it
+straight in. Below the board: whose turn it is, **undo** (takes back one
+move) and **new game**.
+
 ## The maths
 
 Connect 4 (7 × 6) is a solved game: James D. Allen and Victor Allis
@@ -29,9 +34,9 @@ address bar stays clean afterwards):
 
 | `?tell=` | What the magician looks for |
 |---|---|
-| `rest` *(default)* | On red's turn the floating red disc above the board settles over the winning column. On touch screens it just sits there; with a mouse, move the pointer off the board to see it. |
+| `rest` | On red's turn the floating red disc above the board settles over the winning column. On touch screens it just sits there; with a mouse, move the pointer off the board to see it. |
 | `screw` | The seven little screws on the bottom rail have slanted slots. The screw under the winning column has its slot **vertical** (`|`). |
-| `shade` | The rim of the next empty hole in the winning column is a shade lighter. Very subtle; best on a large screen. |
+| `shade` *(default)* | The next empty hole in the winning column loses its dark rim, so it looks a touch bigger and lighter. |
 | `off` | No signal (plain game). |
 
 Nothing is shown during the spectator's turn.

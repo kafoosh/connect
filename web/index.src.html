@@ -20,6 +20,7 @@
   --screw: #dfe7f6;
   --screw-slot: #6f87b8;
   --ui: #1f5fd9;
+  --lane: rgba(255, 255, 255, .13);
   --radius: 26px;
 }
 html[data-theme="flat"] {
@@ -35,6 +36,7 @@ html[data-theme="flat"] {
   --screw: #efe9df;
   --screw-slot: #cfc5b5;
   --ui: #3a3a3a;
+  --lane: rgba(120, 95, 60, .07);
   --radius: 30px;
 }
 html[data-theme="night"] {
@@ -50,6 +52,7 @@ html[data-theme="night"] {
   --screw: #2a3466;
   --screw-slot: #4d5b9c;
   --ui: #8fa2ff;
+  --lane: rgba(143, 162, 255, .09);
   --radius: 26px;
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -72,7 +75,8 @@ main {
   align-items: center;
   gap: 18px;
 }
-svg#game { width: 100%; height: auto; display: block; overflow: visible; cursor: pointer; }
+svg#game { width: 100%; height: auto; display: block; overflow: visible; cursor: grab; touch-action: none; }
+svg#game.dragging { cursor: grabbing; }
 .board { fill: var(--board); }
 .ring { fill: none; stroke: var(--hole-ring); stroke-width: 5; transition: stroke .25s; }
 .p1 .face { fill: var(--p1); }
@@ -87,7 +91,10 @@ svg#game { width: 100%; height: auto; display: block; overflow: visible; cursor:
 .screw circle { fill: var(--screw); }
 .screw line { stroke: var(--screw-slot); stroke-width: 3; stroke-linecap: round; }
 #preview { transition: transform .12s ease-out, opacity .15s; }
+#preview.live { transition: opacity .15s; }
 #preview.hidden { opacity: 0; }
+#lane { fill: var(--lane); opacity: 0; transition: opacity .15s; pointer-events: none; }
+#lane.on { opacity: 1; }
 
 .bar { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 0 6px; }
 .turn { display: flex; gap: 12px; align-items: center; }
@@ -101,11 +108,15 @@ svg#game { width: 100%; height: auto; display: block; overflow: visible; cursor:
 .chip.on { transform: scale(1); opacity: 1; }
 .chip.won { animation: bob .7s ease-in-out infinite alternate; }
 @keyframes bob { from { transform: scale(1) translateY(0); } to { transform: scale(1.08) translateY(-4px); } }
-button#restart {
-  width: 44px; height: 44px; border: 0; border-radius: 50%;
+.tools { display: flex; gap: 4px; }
+.tools button {
+  width: 44px; height: 44px; border: 0; border-radius: 50%; padding: 0;
   background: transparent; color: var(--ui); cursor: pointer;
   display: grid; place-items: center; opacity: .8;
+  transition: opacity .2s, transform .15s;
 }
+.tools button:disabled { opacity: .25; cursor: default; }
+button#undo:active:not(:disabled) { transform: translateX(-3px); }
 button#restart:active { transform: rotate(-40deg); }
 button#restart.nudge { animation: nudge 1.2s ease-in-out infinite; }
 @keyframes nudge { 50% { transform: rotate(-30deg); opacity: 1; } }
@@ -128,6 +139,7 @@ button#restart.nudge { animation: nudge 1.2s ease-in-out infinite; }
     <g filter="url(#shadow)">
       <rect class="board" x="0" y="100" width="740" height="680" rx="34" mask="url(#holes)"/>
     </g>
+    <rect id="lane" x="26" y="110" width="88" height="620" rx="44"/>
     <g id="rings"></g>
     <g id="screws"></g>
     <g id="wins"></g>
@@ -135,9 +147,14 @@ button#restart.nudge { animation: nudge 1.2s ease-in-out infinite; }
   </svg>
   <div class="bar">
     <div class="turn"><div class="chip p1 on" id="c1"></div><div class="chip p2" id="c2"></div></div>
-    <button id="restart" aria-label="New game">
-      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
-    </button>
+    <div class="tools">
+      <button id="undo" aria-label="Undo">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
+      </button>
+      <button id="restart" aria-label="New game">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
+      </button>
+    </div>
   </div>
 </main>
 
@@ -157,7 +174,7 @@ function setting(name, allowed, fallback) {
   return allowed.includes(v) ? v : fallback;
 }
 const THEME = setting("theme", ["classic", "flat", "night"], "classic");
-const TELL = setting("tell", ["rest", "screw", "shade", "off"], "rest");
+const TELL = setting("tell", ["rest", "screw", "shade", "off"], "shade");
 document.documentElement.dataset.theme = THEME;
 document.querySelector('meta[name="theme-color"]').content =
   getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
@@ -207,7 +224,11 @@ let grid, heights, discEls, moves, turn, over, busy, hint, solveId = 0;
 const discsG = document.getElementById("discs");
 const winsG = document.getElementById("wins");
 const preview = document.getElementById("preview");
-let hoverCol = null;
+let pointerX = null;   // board x of the mouse/finger while hovering or dragging
+let dragId = null;     // pointer currently dragging the disc
+let lastCol = null;
+const lane = document.getElementById("lane");
+const undoBtn = document.getElementById("undo");
 
 function newGame() {
   grid = Array.from({ length: COLS }, () => Array(ROWS).fill(0));
@@ -215,13 +236,36 @@ function newGame() {
   discEls = Array.from({ length: COLS }, () => Array(ROWS).fill(null));
   moves = "";
   turn = 1;
-  over = false;
   busy = false;
+  lastCol = null;
   discsG.textContent = "";
+  clearResult();
+  solveId++;
+  setHint(null);
+  updateTurn();
+  requestHint();
+}
+
+function clearResult() {
+  over = false;
   winsG.textContent = "";
+  for (const n of discsG.children) n.classList.remove("dim");
   document.getElementById("restart").classList.remove("nudge");
   document.getElementById("c1").classList.remove("won");
   document.getElementById("c2").classList.remove("won");
+}
+
+function undo() {
+  if (busy || !moves.length) return;
+  const c = moves.charCodeAt(moves.length - 1) - 49;
+  moves = moves.slice(0, -1);
+  const r = --heights[c];
+  turn = grid[c][r];
+  grid[c][r] = 0;
+  discEls[c][r].remove();
+  discEls[c][r] = null;
+  lastCol = moves.length ? moves.charCodeAt(moves.length - 1) - 49 : null;
+  clearResult();
   solveId++;
   setHint(null);
   updateTurn();
@@ -229,22 +273,33 @@ function newGame() {
 }
 
 function updateTurn() {
+  undoBtn.disabled = moves.length === 0;
   document.getElementById("c1").classList.toggle("on", over ? over === 1 : turn === 1);
   document.getElementById("c2").classList.toggle("on", over ? over === 2 : turn === 2);
-  preview.setAttribute("class", "disc p" + turn + (over || busy ? " hidden" : ""));
+  preview.classList.remove("p1", "p2");
+  preview.classList.add("p" + turn);
+  preview.classList.toggle("hidden", !!(over || busy));
   placePreview();
 }
 
 function placePreview() {
-  let c = hoverCol;
-  if (c === null) {
+  const live = pointerX !== null && !over && !busy;
+  let x;
+  if (live) x = Math.max(cx(0), Math.min(cx(COLS - 1), pointerX));
+  else {
     // Resting position when no pointer is over the board.
+    let c;
     if (turn === 1 && hint !== null && TELL === "rest") c = hint;
     else c = lastCol !== null ? lastCol : 3;
+    x = cx(c);
   }
-  preview.setAttribute("transform", `translate(${cx(c)} ${PREVIEW_Y})`);
+  preview.classList.toggle("live", live);
+  preview.setAttribute("transform", `translate(${x} ${PREVIEW_Y})`);
+  // subtle lane over the column the disc would fall into
+  const c = colOf(x);
+  lane.setAttribute("x", PAD + c * CELL + 6);
+  lane.classList.toggle("on", live && heights[c] < ROWS);
 }
-let lastCol = null;
 
 function makeDisc(player) {
   const g = el("g", { class: "disc p" + player }, discsG);
@@ -420,20 +475,41 @@ const solver = new Promise(resolve => {
 // ---------------------------------------------------------------------------
 // Input
 // ---------------------------------------------------------------------------
-function colAt(evt) {
+function colOf(x) { return Math.max(0, Math.min(COLS - 1, Math.floor((x - PAD) / CELL))); }
+function boardX(evt) {
   const pt = svg.createSVGPoint();
   pt.x = evt.clientX; pt.y = evt.clientY;
-  const p = pt.matrixTransform(svg.getScreenCTM().inverse());
-  const c = Math.floor((p.x - PAD) / CELL);
-  return Math.max(0, Math.min(COLS - 1, c));
+  return pt.matrixTransform(svg.getScreenCTM().inverse()).x;
 }
-svg.addEventListener("pointermove", e => {
-  if (e.pointerType !== "mouse") return;
-  hoverCol = colAt(e);
+// Press anywhere on the board to pick up the disc, slide to a column, let go to drop.
+svg.addEventListener("pointerdown", e => {
+  if (dragId !== null || over || busy || (e.pointerType === "mouse" && e.button !== 0)) return;
+  dragId = e.pointerId;
+  svg.setPointerCapture(e.pointerId);
+  svg.classList.add("dragging");
+  pointerX = boardX(e);
   placePreview();
 });
-svg.addEventListener("pointerleave", () => { hoverCol = null; placePreview(); });
-svg.addEventListener("click", e => drop(colAt(e)));
+svg.addEventListener("pointermove", e => {
+  if (dragId !== null ? e.pointerId !== dragId : e.pointerType !== "mouse") return;
+  pointerX = boardX(e);
+  placePreview();
+});
+function endDrag(e, dropIt) {
+  if (e.pointerId !== dragId) return;
+  dragId = null;
+  svg.classList.remove("dragging");
+  const c = colOf(Math.max(cx(0), Math.min(cx(COLS - 1), pointerX)));
+  if (e.pointerType !== "mouse") pointerX = null;
+  if (dropIt) drop(c);
+  placePreview();
+}
+svg.addEventListener("pointerup", e => endDrag(e, true));
+svg.addEventListener("pointercancel", e => endDrag(e, false));
+svg.addEventListener("pointerleave", e => {
+  if (dragId === null && e.pointerType === "mouse") { pointerX = null; placePreview(); }
+});
+undoBtn.addEventListener("click", undo);
 document.getElementById("restart").addEventListener("click", newGame);
 
 newGame();
