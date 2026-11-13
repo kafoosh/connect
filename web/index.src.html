@@ -546,20 +546,17 @@ function silentWav(seconds) {
   return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
 }
 function setSession(t) { try { const a = navigator.audioSession; if (a && a.type !== t) a.type = t; } catch (e) {} }
-// Artwork: the same text drawn big, so the watch's album-art square shows it too.
-const artCache = {};
-function artwork(text) {
-  if (!artCache[text]) {
+// Artwork: a plain black square that never changes (the title carries the signal).
+let blackArt = null;
+function artwork() {
+  if (!blackArt) {
     const cv = document.createElement("canvas");
     cv.width = cv.height = 512;
     const g = cv.getContext("2d");
     g.fillStyle = "#000"; g.fillRect(0, 0, 512, 512);
-    g.fillStyle = "#fff"; g.textAlign = "center"; g.textBaseline = "middle";
-    g.font = `700 ${text.length > 1 ? 190 : 380}px system-ui, -apple-system, Helvetica, Arial, sans-serif`;
-    g.fillText(text, 256, 276);
-    artCache[text] = cv.toDataURL("image/png");
+    blackArt = cv.toDataURL("image/png");
   }
-  return artCache[text];
+  return blackArt;
 }
 function nowPlaying(title) {
   npTitle = title;
@@ -569,7 +566,7 @@ function nowPlaying(title) {
   try {
     navigator.mediaSession.metadata = new MediaMetadata({
       title, artist: "", album: "",
-      artwork: [{ src: artwork(title), sizes: "512x512", type: "image/png" }],
+      artwork: [{ src: artwork(), sizes: "512x512", type: "image/png" }],
     });
     navigator.mediaSession.playbackState = "playing";
   } catch (e) {}

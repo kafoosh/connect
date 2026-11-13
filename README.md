@@ -62,8 +62,7 @@ from you and plays both colours, dropping red wherever you call it. The phone
 - **Use a normal Safari tab, not Private Browsing.** In private tabs Safari
   deliberately blanks everything on Now Playing (title, artwork, even the
   site name), so the watch shows only the play controls.
-- The watch shows the signal twice: as the track title and as big white
-  text on the album-art square.
+- Only the track title changes. The album-art square stays plain black.
 - **Before handing over:** check that your watch shows `—` or a number in
   Now Playing. Turning on *Auto-Launch Audio Apps* on the watch
   (Watch app → General → Auto-Launch) makes Now Playing open by itself.
