@@ -752,6 +752,17 @@ function soundUnlock() {
     try { ac = new AC(); } catch (e) { ac = null; return null; }
     sfx = ac.createGain(); sfx.gain.value = 0.9; sfx.connect(ac.destination);
     ac.onstatechange = () => dbg("context " + ac.state);
+    // Keep the engine busy with a constant silent signal, the way the play repo's
+    // music does: iOS lets an idle Web Audio context fall asleep between sounds,
+    // and waking it outside a tap isn't always allowed.
+    try {
+      const keep = ac.createConstantSource(), kg = ac.createGain();
+      keep.offset.value = 0; kg.gain.value = 0;
+      keep.connect(kg); kg.connect(ac.destination); keep.start();
+    } catch (e) {
+      const o = ac.createOscillator(), kg = ac.createGain();
+      kg.gain.value = 0; o.connect(kg); kg.connect(ac.destination); o.start();
+    }
     dbg("context created (" + ac.state + ", " + ac.sampleRate + " Hz)");
     noiseBuf = ac.createBuffer(1, Math.round(ac.sampleRate * 0.25), ac.sampleRate);
     const d = noiseBuf.getChannelData(0);
@@ -776,7 +787,7 @@ window.addEventListener("pagehide", () => { if (ac && !listening) ac.suspend().c
 // sound for that: ask it to resume and schedule anyway (it plays as soon as it runs).
 function canPlay() {
   if (MUTED || !ac || ac.state === "closed") return false;
-  if (ac.state !== "running") { syncSession(); ac.resume().catch(() => {}); dbg("resume requested (" + ac.state + ")"); }
+  if (ac.state !== "running") { syncSession(); ac.resume().then(() => dbg("resumed"), e => dbg("resume refused: " + e.name)); dbg("resume requested (" + ac.state + ")"); }
   return true;
 }
 // Like the play repo: while on screen, keep nudging a paused context back (~1/s).
@@ -785,6 +796,7 @@ setInterval(() => {
 }, 1000);
 function tick() {                       // disc sliding into the next lane
   if (!canPlay()) return;
+  dbg("tick (" + ac.state + ")");
   const t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
   o.type = "triangle"; o.frequency.setValueAtTime(1900, t); o.frequency.exponentialRampToValueAtTime(900, t + 0.025);
   g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.09, t + 0.002); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.03);
