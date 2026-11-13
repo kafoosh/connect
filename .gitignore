@@ -8,3 +8,8 @@ solver/*.wasm
 solver/p1*.txt
 solver/book/
 *.log
+research/prop
+research/prop2
+research/brute_prop
+research/sim_prop
+research/out/
