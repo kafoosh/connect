@@ -88,7 +88,7 @@ the same page can hear it and copy that board:
    restart again stops listening. Put the phone face down. It keeps the
    screen awake, and it must stay on this page.
 2. **Game phone** (borrowed, sound on, volume up): the spectator plays a game.
-   When it ends, the chime plays.
+   When it ends, "Red wins" (or "Yellow wins") pops up with confetti and the chime plays.
 3. The prediction phone hears the chime, stops listening and shows that
    exact final board as if its prediction game had ended that way, with the
    winning four highlighted. Turn it over.

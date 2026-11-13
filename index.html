@@ -118,6 +118,17 @@ button#sound.muted { opacity: .35; }
 button#sound.muted .on { display: none; }
 button#sound.muted .off { display: inline; }
 #restart { -webkit-touch-callout: none; }
+#result {
+  font: 800 54px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; text-anchor: middle; dominant-baseline: central;
+  opacity: 0; pointer-events: none; transform-box: fill-box; transform-origin: center;
+  paint-order: stroke; stroke: var(--bg); stroke-width: 10px; stroke-linejoin: round;
+}
+#result.p1 { fill: var(--p1-edge); }
+#result.p2 { fill: var(--p2-edge); }
+#result.p3 { fill: var(--ui); }
+#result.show { animation: pop .5s cubic-bezier(.2, 1.6, .4, 1) forwards; }
+@keyframes pop { from { opacity: 0; transform: scale(.4); } to { opacity: 1; transform: scale(1); } }
+#confetti { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5; }
 .chip.won { animation: bob .7s ease-in-out infinite alternate; }
 @keyframes bob { from { transform: scale(1) translateY(0); } to { transform: scale(1.08) translateY(-4px); } }
 .tools { display: flex; gap: 4px; }
@@ -137,6 +148,7 @@ button#restart.nudge { animation: nudge 1.2s ease-in-out infinite; }
 </style>
 </head>
 <body>
+<canvas id="confetti"></canvas>
 <main>
   <svg id="game" viewBox="0 0 740 780" aria-label="Connect 4 board">
     <defs>
@@ -158,6 +170,7 @@ button#restart.nudge { animation: nudge 1.2s ease-in-out infinite; }
     <g id="rings"></g>
     <g id="screws"></g>
     <g id="wins"></g>
+    <text id="result" x="370" y="50"></text>
     <rect id="hit" x="0" y="0" width="740" height="780" fill="transparent"/>
   </svg>
   <div class="bar">
@@ -272,6 +285,7 @@ function newGame() {
 
 function clearResult() {
   over = false;
+  hideResult();
   winsG.textContent = "";
   for (const n of discsG.children) n.classList.remove("dim");
   document.getElementById("restart").classList.remove("nudge");
@@ -389,9 +403,61 @@ function afterDrop(c, r, player, silent) {
     document.getElementById("restart").classList.add("nudge");
   }
   if (over) nowPlaying(over === 1 ? "Win" : over === 2 ? "Lost" : "Draw");
+  if (over) showResult(over, !silent);
   if (over && !silent) setTimeout(playChime, 120);
   updateTurn();
   showHint();
+}
+
+// ---- Celebration: "Red wins" / "Yellow wins" / "Draw" and a burst of confetti
+const resultEl = document.getElementById("result");
+const confettiCv = document.getElementById("confetti");
+let confettiRun = 0;
+function showResult(who, party) {
+  resultEl.textContent = who === 1 ? "Red wins" : who === 2 ? "Yellow wins" : "Draw";
+  resultEl.setAttribute("class", "p" + who);
+  void resultEl.getBoundingClientRect();          // restart the pop animation
+  resultEl.classList.add("show");
+  if (party && who !== 3 && !matchMedia("(prefers-reduced-motion: reduce)").matches) setTimeout(() => confetti(who), 120);
+}
+function hideResult() {
+  resultEl.setAttribute("class", "");
+  confettiRun++;
+  const g = confettiCv.getContext("2d");
+  g.clearRect(0, 0, confettiCv.width, confettiCv.height);
+}
+function confetti(who) {
+  const run = ++confettiRun, dpr = Math.min(2, window.devicePixelRatio || 1);
+  const W = confettiCv.width = innerWidth * dpr, H = confettiCv.height = innerHeight * dpr;
+  const g = confettiCv.getContext("2d");
+  const css = getComputedStyle(document.documentElement), v = n => css.getPropertyValue(n).trim();
+  const colours = [v(who === 1 ? "--p1" : "--p2"), v(who === 1 ? "--p1" : "--p2"), v("--p1"), v("--p2"), v("--board"), "#ffffff"];
+  const box = svg.getBoundingClientRect();
+  const ox = (box.left + box.width / 2) * dpr, oy = (box.top + box.height * 0.08) * dpr;
+  const bits = Array.from({ length: 160 }, () => {
+    const a = -Math.PI / 2 + (Math.random() - 0.5) * 2.2, sp = (6 + Math.random() * 11) * dpr;
+    return {
+      x: ox + (Math.random() - 0.5) * box.width * 0.6 * dpr, y: oy,
+      vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, w: (6 + Math.random() * 6) * dpr, h: (3 + Math.random() * 4) * dpr,
+      r: Math.random() * 6.3, vr: (Math.random() - 0.5) * 0.4, c: colours[Math.floor(Math.random() * colours.length)],
+      round: Math.random() < 0.3,
+    };
+  });
+  const start = performance.now();
+  (function frame(now) {
+    if (run !== confettiRun) return;
+    const t = (now - start) / 1000;
+    g.clearRect(0, 0, W, H);
+    g.globalAlpha = Math.max(0, Math.min(1, (3.2 - t) / 0.8));
+    for (const b of bits) {
+      b.vy += 0.32 * dpr; b.vx *= 0.985; b.vy *= 0.985; b.x += b.vx; b.y += b.vy; b.r += b.vr;
+      g.save(); g.translate(b.x, b.y); g.rotate(b.r); g.fillStyle = b.c;
+      if (b.round) { g.beginPath(); g.arc(0, 0, b.h * 0.9, 0, 6.3); g.fill(); }
+      else g.fillRect(-b.w / 2, -b.h / 2 * Math.abs(Math.cos(b.r * 2)) - 0.5, b.w, b.h * Math.abs(Math.cos(b.r * 2)) + 1);
+      g.restore();
+    }
+    if (t < 3.2) requestAnimationFrame(frame); else g.clearRect(0, 0, W, H);
+  })(start);
 }
 
 function checkWin(c, r, p) {
