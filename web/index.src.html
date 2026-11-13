@@ -585,7 +585,7 @@ function boardX(evt) {
 // Press anywhere on the board to pick up the disc, slide to a column, let go to drop.
 svg.addEventListener("pointerdown", e => {
   if (AUDIO) audioWake();
-  if (over && !busy) { soundUnlock(); playChime(); return; }
+  if (over && !busy) return;                     // replay happens on release (see below)
   if (dragId !== null || over || busy || (e.pointerType === "mouse" && e.button !== 0)) return;
   dragId = e.pointerId;
   svg.setPointerCapture(e.pointerId);
@@ -607,7 +607,10 @@ function endDrag(e, dropIt) {
   if (dropIt) drop(c);
   placePreview();
 }
-svg.addEventListener("pointerup", e => endDrag(e, true));
+svg.addEventListener("pointerup", e => {
+  if (dragId === null && over && !busy) { if (!MUTED) soundUnlock(); playChime(); return; }
+  endDrag(e, true);
+});
 svg.addEventListener("pointercancel", e => endDrag(e, false));
 svg.addEventListener("pointerleave", e => {
   if (dragId === null && e.pointerType === "mouse") { pointerX = null; placePreview(); }
@@ -744,56 +747,63 @@ function legacyUnmute(on) {
     if (unmuteEl.paused) unmuteEl.play().catch(() => {});
   } else if (unmuteEl && !unmuteEl.paused) unmuteEl.pause();
 }
-function soundUnlock() {
-  syncSession();                        // before the context starts, as iOS expects
-  if (!ac) {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) return null;
-    try { ac = new AC(); } catch (e) { ac = null; return null; }
-    sfx = ac.createGain(); sfx.gain.value = 0.9; sfx.connect(ac.destination);
-    ac.onstatechange = () => dbg("context " + ac.state);
-    // Keep the engine busy with a constant silent signal, the way the play repo's
-    // music does: iOS lets an idle Web Audio context fall asleep between sounds,
-    // and waking it outside a tap isn't always allowed.
-    try {
-      const keep = ac.createConstantSource(), kg = ac.createGain();
-      keep.offset.value = 0; kg.gain.value = 0;
-      keep.connect(kg); kg.connect(ac.destination); keep.start();
-    } catch (e) {
-      const o = ac.createOscillator(), kg = ac.createGain();
-      kg.gain.value = 0; o.connect(kg); kg.connect(ac.destination); o.start();
-    }
-    dbg("context created (" + ac.state + ", " + ac.sampleRate + " Hz)");
-    noiseBuf = ac.createBuffer(1, Math.round(ac.sampleRate * 0.25), ac.sampleRate);
-    const d = noiseBuf.getChannelData(0);
-    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-    // a silent blip inside the tap fully wakes iOS audio
-    const s = ac.createBufferSource(); s.buffer = ac.createBuffer(1, 1, 22050); s.connect(ac.destination); s.start(0);
+// iPhone rule: Web Audio may only START inside a real tap - the moment a finger
+// lifts (touchend), a click, a key, or a mouse press. A start request made at
+// any other time (finger down, a timer, a sound due mid-animation) is left
+// pending by iOS, and later requests queue behind it, so audio never starts.
+// So: only ever start/resume inside such an event, and if the context is still
+// not running then, replace it with a fresh one created inside that event.
+let acBornAt = 0;
+function buildContext() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  if (ac) { try { ac.onstatechange = null; ac.close(); } catch (e) {} }
+  try { ac = new AC(); } catch (e) { ac = null; return null; }
+  acBornAt = performance.now();
+  sfx = ac.createGain(); sfx.gain.value = 0.9; sfx.connect(ac.destination);
+  ac.onstatechange = () => dbg("context " + ac.state);
+  // Keep the engine busy with a constant silent signal, the way the play repo's
+  // music does, so iOS doesn't let it fall asleep between sounds.
+  try {
+    const keep = ac.createConstantSource(), kg = ac.createGain();
+    keep.offset.value = 0; kg.gain.value = 0;
+    keep.connect(kg); kg.connect(ac.destination); keep.start();
+  } catch (e) {
+    const o = ac.createOscillator(), kg = ac.createGain();
+    kg.gain.value = 0; o.connect(kg); kg.connect(ac.destination); o.start();
   }
-  if (ac.state !== "running") ac.resume().catch(() => {});
+  noiseBuf = ac.createBuffer(1, Math.round(ac.sampleRate * 0.25), ac.sampleRate);
+  const d = noiseBuf.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  // a silent blip inside the tap fully wakes iOS audio
+  const s = ac.createBufferSource(); s.buffer = ac.createBuffer(1, 1, 22050); s.connect(ac.destination); s.start(0);
+  dbg("context created (" + ac.state + ")");
   return ac;
 }
-// Run audio only while the page is on screen (except while listening).
+// Call ONLY from inside a real tap (see above).
+function soundUnlock() {
+  syncSession();                        // before the context starts, as iOS expects
+  if (!ac || ac.state === "closed") buildContext();
+  else if (ac.state !== "running" && !listening && performance.now() - acBornAt > 1500) {
+    dbg("stuck " + ac.state + ": fresh context");
+    buildContext();
+  }
+  if (ac && ac.state !== "running") ac.resume().then(() => dbg("resumed"), e => dbg("resume refused: " + e.name));
+  return ac;
+}
+// Only pause when leaving the page; starting again waits for the next tap.
 function syncAudio() {
   syncSession();
-  if (!ac) return;
-  if (document.hidden && !listening) ac.suspend().catch(() => {});
-  else if (!document.hidden && (!MUTED || listening)) ac.resume().catch(() => {});
+  if (ac && document.hidden && !listening) ac.suspend().catch(() => {});
 }
 document.addEventListener("visibilitychange", syncAudio);
 window.addEventListener("pageshow", syncAudio);
 window.addEventListener("pagehide", () => { if (ac && !listening) ac.suspend().catch(() => {}); if (!AUDIO && !listening) setSession("auto"); legacyUnmute(false); });
-// iOS can pause ("interrupted"/"suspended") the context at any time. Never drop a
-// sound for that: ask it to resume and schedule anyway (it plays as soon as it runs).
+// A sound can only be heard once the engine runs; never ask it to start from here.
 function canPlay() {
-  if (MUTED || !ac || ac.state === "closed") return false;
-  if (ac.state !== "running") { syncSession(); ac.resume().then(() => dbg("resumed"), e => dbg("resume refused: " + e.name)); dbg("resume requested (" + ac.state + ")"); }
+  if (MUTED || !ac || ac.state !== "running") { if (!MUTED && ac) dbg("skipped: " + ac.state); return false; }
   return true;
 }
-// Like the play repo: while on screen, keep nudging a paused context back (~1/s).
-setInterval(() => {
-  if (ac && ac.state !== "running" && ac.state !== "closed" && !document.hidden && (!MUTED || listening)) ac.resume().catch(() => {});
-}, 1000);
 function tick() {                       // disc sliding into the next lane
   if (!canPlay()) return;
   dbg("tick (" + ac.state + ")");
@@ -1152,9 +1162,12 @@ soundBtn.addEventListener("click", () => {
   if (MUTED) syncSession(); else soundUnlock();
 });
 showSound();
-for (const ev of ["pointerdown", "touchend", "click"]) {
-  document.addEventListener(ev, () => { if (!MUTED || listening) soundUnlock(); }, { capture: true, passive: true });
-}
+// Events iOS accepts as a tap for starting audio. (A finger touching down is
+// not one of them; a finger lifting is, even at the end of a drag.)
+const unlockIfOn = () => { if (!MUTED || listening) soundUnlock(); };
+for (const ev of ["touchend", "click", "keydown"]) document.addEventListener(ev, unlockIfOn, { capture: true, passive: true });
+document.addEventListener("pointerdown", e => { if (e.pointerType === "mouse") unlockIfOn(); }, { capture: true, passive: true });
+document.addEventListener("pointerup", e => { if (e.pointerType !== "mouse") unlockIfOn(); }, { capture: true, passive: true });
 
 // ---------------------------------------------------------------------------
 // ?debug: a small panel with the audio state, to diagnose phones remotely.
