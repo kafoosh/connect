@@ -687,8 +687,8 @@ function setAudioMode(on) {
   try { localStorage.setItem("c4-mode", on ? "audio" : "board"); } catch (e) {}
   document.documentElement.classList.toggle("audio", on);
   svg.setAttribute("viewBox", on ? "0 -70 740 850" : "0 0 740 780");
-  if (on) audioWake();
-  else if (player) { player.pause(); syncSession(); try { navigator.mediaSession.metadata = null; } catch (e) {} }
+  if (on) { legacyUnmute(false); audioWake(); }
+  else { if (player) { player.pause(); try { navigator.mediaSession.metadata = null; } catch (e) {} } syncSession(); }
   // redraw the signal for the current position in the new mode
   const p = pendingHint;
   setHint(null);
@@ -722,15 +722,25 @@ function syncSession() {
   else setSession(wantedSession());
   legacyUnmute(!MUTED && !document.hidden && !listening);
 }
-// Older iOS without navigator.audioSession: a looping silent <audio> element
-// switches the page to playback audio, which also lets Web Audio ignore the switch.
+// Belt and braces for iPhone: while sound is on, also loop a silent <audio>
+// element. A playing media element puts the page in "media playback" mode,
+// which lets Web Audio ignore the silent switch on every iOS version (the
+// approach of unmute.js). Not used in audio mode (its own silent track already
+// does this, and a second track could steal the watch's Now Playing title).
+const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 let unmuteEl = null;
 function legacyUnmute(on) {
-  if ("audioSession" in navigator) return;
-  const iOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-  if (!iOS) return;
-  if (on) {
-    if (!unmuteEl) { unmuteEl = new Audio(silentWav(1)); unmuteEl.loop = true; unmuteEl.setAttribute("playsinline", ""); }
+  if (!IS_IOS) return;
+  if (on && !AUDIO) {
+    if (!unmuteEl) {
+      unmuteEl = document.createElement("audio");
+      unmuteEl.src = silentWav(1);
+      unmuteEl.loop = true;
+      unmuteEl.setAttribute("playsinline", "");
+      unmuteEl.setAttribute("x-webkit-airplay", "deny");
+      unmuteEl.disableRemotePlayback = true;
+      unmuteEl.preload = "auto";
+    }
     if (unmuteEl.paused) unmuteEl.play().catch(() => {});
   } else if (unmuteEl && !unmuteEl.paused) unmuteEl.pause();
 }
@@ -765,7 +775,7 @@ function tick() {                       // disc sliding into the next lane
   if (!canPlay()) return;
   const t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
   o.type = "triangle"; o.frequency.setValueAtTime(1900, t); o.frequency.exponentialRampToValueAtTime(900, t + 0.025);
-  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.16, t + 0.002); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.03);
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.09, t + 0.002); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.03);
   o.connect(g); g.connect(sfx); o.start(t); o.stop(t + 0.04);
 }
 function clack(strength) {              // disc landing (and its small bounce)
@@ -774,11 +784,11 @@ function clack(strength) {              // disc landing (and its small bounce)
   const n = ac.createBufferSource(); n.buffer = noiseBuf;
   const bp = ac.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 2300; bp.Q.value = 1.4;
   const g = ac.createGain();
-  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.9 * strength, t + 0.002); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.07);
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.32 * strength, t + 0.002); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.07);
   n.connect(bp); bp.connect(g); g.connect(sfx); n.start(t); n.stop(t + 0.09);
   const o = ac.createOscillator(), og = ac.createGain();
   o.type = "sine"; o.frequency.setValueAtTime(340, t); o.frequency.exponentialRampToValueAtTime(140, t + 0.06);
-  og.gain.setValueAtTime(0.0001, t); og.gain.exponentialRampToValueAtTime(0.5 * strength, t + 0.003); og.gain.exponentialRampToValueAtTime(0.0001, t + 0.08);
+  og.gain.setValueAtTime(0.0001, t); og.gain.exponentialRampToValueAtTime(0.18 * strength, t + 0.003); og.gain.exponentialRampToValueAtTime(0.0001, t + 0.08);
   o.connect(og); og.connect(sfx); o.start(t); o.stop(t + 0.1);
 }
 
@@ -1070,7 +1080,9 @@ soundBtn.addEventListener("click", () => {
   if (MUTED) syncSession(); else soundUnlock();
 });
 showSound();
-document.addEventListener("pointerdown", () => { if (!MUTED || listening) soundUnlock(); }, { capture: true });
+for (const ev of ["pointerdown", "touchend", "click"]) {
+  document.addEventListener(ev, () => { if (!MUTED || listening) soundUnlock(); }, { capture: true, passive: true });
+}
 
 newGame();
 </script>
