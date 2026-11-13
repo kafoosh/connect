@@ -78,13 +78,13 @@ tick as the disc slides between columns, a clack when it lands, and a
 winning chime at the end of every game. Mute only affects these sounds; audio
 mode's silent watch track keeps playing.
 
-Sound plays even with the iPhone's silent switch on. Two methods are used
-together: the page asks iOS for "playback" audio (as in the play repo), and
-on iPhone it also loops a silent track while sound is on, which makes iOS
-treat the page as a media player. Both are released when muted or when you
-leave Safari, so your music can resume. Side effect: while sound is on,
-"Connect 4" can appear in the iPhone's Now Playing controls. Volume still
-follows the volume buttons.
+Sound plays even with the iPhone's silent switch on: like the play repo, the
+page asks iOS for "playback" audio while sound is on and hands it back when
+muted or when you leave Safari (older iOS without that setting gets a looping
+silent track instead). Volume still follows the volume buttons.
+
+Add `?debug` to the address to see a small panel with the audio state (iOS
+version, audio session, whether the sound engine is running, recent events).
 
 The chime secretly carries the exact final board. A second phone running
 the same page can hear it and copy that board:

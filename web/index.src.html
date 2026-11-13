@@ -722,15 +722,15 @@ function syncSession() {
   else setSession(wantedSession());
   legacyUnmute(!MUTED && !document.hidden && !listening);
 }
-// Belt and braces for iPhone: while sound is on, also loop a silent <audio>
-// element. A playing media element puts the page in "media playback" mode,
-// which lets Web Audio ignore the silent switch on every iOS version (the
-// approach of unmute.js). Not used in audio mode (its own silent track already
-// does this, and a second track could steal the watch's Now Playing title).
+// Older iOS without the Audio Session API: loop a silent <audio> element while
+// sound is on; a playing media element lets Web Audio ignore the silent switch.
+// (Not used where navigator.audioSession exists: there a second media element
+// can interrupt Web Audio, and the session type alone does the job, as in the
+// play repo. Not used in audio mode either, which has its own silent track.)
 const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 let unmuteEl = null;
 function legacyUnmute(on) {
-  if (!IS_IOS) return;
+  if (!IS_IOS || "audioSession" in navigator) return;
   if (on && !AUDIO) {
     if (!unmuteEl) {
       unmuteEl = document.createElement("audio");
@@ -751,6 +751,8 @@ function soundUnlock() {
     if (!AC) return null;
     try { ac = new AC(); } catch (e) { ac = null; return null; }
     sfx = ac.createGain(); sfx.gain.value = 0.9; sfx.connect(ac.destination);
+    ac.onstatechange = () => dbg("context " + ac.state);
+    dbg("context created (" + ac.state + ", " + ac.sampleRate + " Hz)");
     noiseBuf = ac.createBuffer(1, Math.round(ac.sampleRate * 0.25), ac.sampleRate);
     const d = noiseBuf.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
@@ -770,7 +772,17 @@ function syncAudio() {
 document.addEventListener("visibilitychange", syncAudio);
 window.addEventListener("pageshow", syncAudio);
 window.addEventListener("pagehide", () => { if (ac && !listening) ac.suspend().catch(() => {}); if (!AUDIO && !listening) setSession("auto"); legacyUnmute(false); });
-const canPlay = () => !MUTED && ac && ac.state === "running";
+// iOS can pause ("interrupted"/"suspended") the context at any time. Never drop a
+// sound for that: ask it to resume and schedule anyway (it plays as soon as it runs).
+function canPlay() {
+  if (MUTED || !ac || ac.state === "closed") return false;
+  if (ac.state !== "running") { syncSession(); ac.resume().catch(() => {}); dbg("resume requested (" + ac.state + ")"); }
+  return true;
+}
+// Like the play repo: while on screen, keep nudging a paused context back (~1/s).
+setInterval(() => {
+  if (ac && ac.state !== "running" && ac.state !== "closed" && !document.hidden && (!MUTED || listening)) ac.resume().catch(() => {});
+}, 1000);
 function tick() {                       // disc sliding into the next lane
   if (!canPlay()) return;
   const t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
@@ -780,6 +792,7 @@ function tick() {                       // disc sliding into the next lane
 }
 function clack(strength) {              // disc landing (and its small bounce)
   if (!canPlay()) return;
+  dbg("clack (" + ac.state + ")");
   const t = ac.currentTime;
   const n = ac.createBufferSource(); n.buffer = noiseBuf;
   const bp = ac.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 2300; bp.Q.value = 1.4;
@@ -1082,6 +1095,34 @@ soundBtn.addEventListener("click", () => {
 showSound();
 for (const ev of ["pointerdown", "touchend", "click"]) {
   document.addEventListener(ev, () => { if (!MUTED || listening) soundUnlock(); }, { capture: true, passive: true });
+}
+
+// ---------------------------------------------------------------------------
+// ?debug: a small panel with the audio state, to diagnose phones remotely.
+// ---------------------------------------------------------------------------
+const DEBUG = params.has("debug");
+const dbgLog = [];
+function dbg(msg) {
+  if (!DEBUG) return;
+  dbgLog.push(new Date().toTimeString().slice(3, 8) + " " + msg);
+  if (dbgLog.length > 8) dbgLog.shift();
+}
+if (DEBUG) {
+  const box = document.createElement("pre");
+  box.style.cssText = "position:fixed;left:6px;right:6px;bottom:6px;margin:0;padding:8px;font:11px/1.35 ui-monospace,Menlo,monospace;background:rgba(0,0,0,.78);color:#fff;border-radius:8px;z-index:9;pointer-events:none;white-space:pre-wrap";
+  document.body.appendChild(box);
+  const ios = (navigator.userAgent.match(/OS (\d+[_\d]*) like Mac/) || [])[1];
+  setInterval(() => {
+    const as = navigator.audioSession;
+    box.textContent = [
+      "iOS " + (ios ? ios.replace(/_/g, ".") : "-") + " | audioSession " + (as ? as.type : "MISSING"),
+      "sound " + (MUTED ? "MUTED" : "on") + " | context " + (ac ? ac.state : "not created") + " | listening " + listening,
+      "silent-switch helper " + (!IS_IOS || (as && true) ? "not used" : unmuteEl ? (unmuteEl.paused ? "paused" : "playing") : "not started") +
+        " | watch track " + (player ? (player.paused ? "paused" : "playing") : "off"),
+      ...dbgLog,
+    ].join("\n");
+  }, 250);
+  for (const ev of ["pointerdown", "touchend", "click"]) document.addEventListener(ev, () => dbg(ev), { capture: true, passive: true });
 }
 
 newGame();
