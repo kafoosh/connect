@@ -688,7 +688,7 @@ function setAudioMode(on) {
   document.documentElement.classList.toggle("audio", on);
   svg.setAttribute("viewBox", on ? "0 -70 740 850" : "0 0 740 780");
   if (on) audioWake();
-  else if (player) { player.pause(); setSession("auto"); try { navigator.mediaSession.metadata = null; } catch (e) {} }
+  else if (player) { player.pause(); syncSession(); try { navigator.mediaSession.metadata = null; } catch (e) {} }
   // redraw the signal for the current position in the new mode
   const p = pendingHint;
   setHint(null);
@@ -710,7 +710,32 @@ if (AUDIO) { document.documentElement.classList.add("audio"); svg.setAttribute("
 let MUTED = false;
 try { MUTED = localStorage.getItem("c4-mute") === "1"; } catch (e) {}
 let ac = null, sfx = null, noiseBuf = null;
+// iPhone silent switch: like the play repo, ask for the 'playback' audio session
+// (Safari 16.4+) so sound plays with the switch on. Claim it only while we need
+// it and hand it back ('auto') when muted or hidden, so other apps can resume.
+function wantedSession() {
+  if (listening || micStarting) return "play-and-record";
+  return !MUTED || AUDIO ? "playback" : "auto";
+}
+function syncSession() {
+  if (document.hidden && !listening && !AUDIO) setSession("auto");
+  else setSession(wantedSession());
+  legacyUnmute(!MUTED && !document.hidden && !listening);
+}
+// Older iOS without navigator.audioSession: a looping silent <audio> element
+// switches the page to playback audio, which also lets Web Audio ignore the switch.
+let unmuteEl = null;
+function legacyUnmute(on) {
+  if ("audioSession" in navigator) return;
+  const iOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  if (!iOS) return;
+  if (on) {
+    if (!unmuteEl) { unmuteEl = new Audio(silentWav(1)); unmuteEl.loop = true; unmuteEl.setAttribute("playsinline", ""); }
+    if (unmuteEl.paused) unmuteEl.play().catch(() => {});
+  } else if (unmuteEl && !unmuteEl.paused) unmuteEl.pause();
+}
 function soundUnlock() {
+  syncSession();                        // before the context starts, as iOS expects
   if (!ac) {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return null;
@@ -719,17 +744,22 @@ function soundUnlock() {
     noiseBuf = ac.createBuffer(1, Math.round(ac.sampleRate * 0.25), ac.sampleRate);
     const d = noiseBuf.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    // a silent blip inside the tap fully wakes iOS audio
     const s = ac.createBufferSource(); s.buffer = ac.createBuffer(1, 1, 22050); s.connect(ac.destination); s.start(0);
   }
-  if (!listening && !micStarting) setSession(MUTED && !AUDIO ? "auto" : "playback"); // play with the silent switch on
   if (ac.state !== "running") ac.resume().catch(() => {});
   return ac;
 }
-document.addEventListener("visibilitychange", () => {
+// Run audio only while the page is on screen (except while listening).
+function syncAudio() {
+  syncSession();
   if (!ac) return;
   if (document.hidden && !listening) ac.suspend().catch(() => {});
-  else if (!document.hidden) ac.resume().catch(() => {});
-});
+  else if (!document.hidden && (!MUTED || listening)) ac.resume().catch(() => {});
+}
+document.addEventListener("visibilitychange", syncAudio);
+window.addEventListener("pageshow", syncAudio);
+window.addEventListener("pagehide", () => { if (ac && !listening) ac.suspend().catch(() => {}); if (!AUDIO && !listening) setSession("auto"); legacyUnmute(false); });
 const canPlay = () => !MUTED && ac && ac.state === "running";
 function tick() {                       // disc sliding into the next lane
   if (!canPlay()) return;
@@ -946,8 +976,7 @@ document.addEventListener("visibilitychange", () => { if (listening && document.
 async function startListening() {
   if (micStarting) return;
   micStarting = true;
-  const ctx = soundUnlock();                      // inside the tap, so iOS lets it run
-  setSession("play-and-record");                  // after soundUnlock: the mic needs this session
+  const ctx = soundUnlock();                      // inside the tap; session = play-and-record
   if (!ctx || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { micStarting = false; listenFailed(); return; }
   try {
     mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } });
@@ -955,7 +984,7 @@ async function startListening() {
     try { mic = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e2) { mic = null; }
   }
   micStarting = false;
-  if (!mic) { setSession(MUTED && !AUDIO ? "auto" : "playback"); listenFailed(); return; }
+  if (!mic) { syncSession(); listenFailed(); return; }
   if (ctx.state !== "running") ctx.resume().catch(() => {});
   listening = true;
   listener = new ChimeListener(ctx.sampleRate, g => { stopListening(); revealBoard(g); });
@@ -977,7 +1006,7 @@ function stopListening() {
   listening = false; listener = null;
   if (proc) { proc.onaudioprocess = null; try { proc.disconnect(); } catch (e) {} proc = null; }
   if (mic) { mic.getTracks().forEach(t => t.stop()); mic = null; }
-  setSession(MUTED && !AUDIO ? "auto" : "playback");
+  syncSession();
   updateTurn();
 }
 // Show the received board as if the prediction game had ended that way.
@@ -1038,7 +1067,7 @@ soundBtn.addEventListener("click", () => {
   MUTED = !MUTED;
   try { localStorage.setItem("c4-mute", MUTED ? "1" : "0"); } catch (e) {}
   showSound();
-  soundUnlock();
+  if (MUTED) syncSession(); else soundUnlock();
 });
 showSound();
 document.addEventListener("pointerdown", () => { if (!MUTED || listening) soundUnlock(); }, { capture: true });

@@ -78,6 +78,11 @@ tick as the disc slides between columns, a clack when it lands, and a
 winning chime at the end of every game. Mute only affects these sounds; audio
 mode's silent watch track keeps playing.
 
+Sound plays even with the iPhone's silent switch on (like the play repo:
+the page asks iOS for "playback" audio while sound is on, and hands it back
+when muted or when you leave Safari, so your music can resume). Volume still
+follows the volume buttons.
+
 The chime secretly carries the exact final board. A second phone running
 the same page can hear it and copy that board:
 
